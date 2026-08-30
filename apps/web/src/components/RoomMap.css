@@ -1,0 +1,121 @@
+.room-map-wrap {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px;
+}
+
+.room-map-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.rm-ground {
+  fill: var(--bg);
+}
+
+.rm-corridor {
+  fill: var(--floor);
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.rm-corridor-label {
+  fill: var(--text-dim);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  font-weight: 700;
+}
+
+.rm-core {
+  fill: var(--floor-2);
+  stroke: var(--accent-2);
+  stroke-width: 2;
+  stroke-dasharray: 4 3;
+}
+
+.rm-core-label {
+  fill: var(--accent-2);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.rm-room {
+  fill: var(--floor-2);
+  stroke: #37405c;
+  stroke-width: 3;
+}
+
+.rm-desk {
+  fill: #2a3braf;
+  fill: #2a3350;
+  stroke: #3a4468;
+  stroke-width: 1;
+}
+
+.rm-door {
+  fill: var(--floor);
+}
+
+.rm-room-label {
+  fill: var(--text-dim);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.rm-worker {
+  transition: transform 0.4s linear;
+}
+
+.rm-worker-label {
+  fill: var(--text);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.rm-worker-status {
+  fill: var(--text-dim);
+  font-size: 8px;
+}
+
+.rm-worker-idle {
+  fill: #4a5170;
+}
+.rm-worker-info {
+  fill: var(--accent-2);
+}
+.rm-worker-warn {
+  fill: var(--warn);
+}
+.rm-worker-ok {
+  fill: var(--accent);
+}
+.rm-worker-danger {
+  fill: var(--danger);
+}
+
+.rm-worker-pulse {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  opacity: 0;
+}
+
+.rm-worker-info.rm-worker-pulse,
+.rm-worker-warn.rm-worker-pulse {
+  animation: rm-pulse 1.6s ease-out infinite;
+}
+
+@keyframes rm-pulse {
+  0% {
+    r: 11;
+    opacity: 0.6;
+  }
+  100% {
+    r: 22;
+    opacity: 0;
+  }
+}

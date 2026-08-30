@@ -1,0 +1,21 @@
+{
+  "name": "goodall-electrical-ai-os",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Goodall Electrical AI Business Operating System",
+  "workspaces": [
+    "apps/api",
+    "apps/web"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace apps/api && npm run build --workspace apps/web",
+    "dev": "npm run dev --workspace apps/api & npm run dev --workspace apps/web",
+    "dev:api": "npm run dev --workspace apps/api",
+    "dev:web": "npm run dev --workspace apps/web",
+    "migrate": "npm run migrate --workspace apps/api",
+    "lint": "npm run lint --workspace apps/api && npm run lint --workspace apps/web"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
