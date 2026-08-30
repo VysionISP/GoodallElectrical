@@ -76,8 +76,13 @@ export default function IntegrationsPage() {
   }
 
   async function connectXero() {
-    const { authorizeUrl } = await api.get<{ authorizeUrl: string }>("/integrations/xero/connect");
-    window.open(authorizeUrl, "_blank", "noopener");
+    setSaveError((prev) => ({ ...prev, xero: "" }));
+    try {
+      const { authorizeUrl } = await api.get<{ authorizeUrl: string }>("/integrations/xero/connect");
+      window.open(authorizeUrl, "_blank", "noopener");
+    } catch (err: any) {
+      setSaveError((prev) => ({ ...prev, xero: err.message ?? "Could not start Xero connect" }));
+    }
   }
 
   if (!integrations) return <div className="card">Loading…</div>;
