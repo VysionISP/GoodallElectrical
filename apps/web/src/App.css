@@ -247,3 +247,14 @@
   gap: 8px;
   flex-wrap: wrap;
 }
+
+.field-error {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 93, 93, 0.12);
+  border: 1px solid rgba(255, 93, 93, 0.35);
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.4;
+}

@@ -23,6 +23,14 @@ if (migrationResult.applied.length > 0) {
 }
 console.log(`[db] ${migrationResult.alreadyCurrent.length} migration(s) already current`);
 
+if (!process.env.CREDENTIAL_ENCRYPTION_KEY) {
+  console.warn(
+    "[api] WARNING: CREDENTIAL_ENCRYPTION_KEY is not set. Saving integration credentials will fail with a 500 " +
+      "until it is. Generate one with `openssl rand -base64 32`, add it to apps/api/.env, and restart the server " +
+      "-- .env is only read at process startup, so editing it while `npm run dev` is already running has no effect."
+  );
+}
+
 const app = express();
 const PORT = Number(process.env.PORT ?? 8787);
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:5173";

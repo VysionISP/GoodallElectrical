@@ -32,6 +32,7 @@ export default function IntegrationsPage() {
   const [integrations, setIntegrations] = useState<IntegrationSummary[] | null>(null);
   const [drafts, setDrafts] = useState<Record<string, Record<string, string>>>({});
   const [testResult, setTestResult] = useState<Record<string, string>>({});
+  const [saveError, setSaveError] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
 
   function load() {
@@ -41,9 +42,12 @@ export default function IntegrationsPage() {
 
   async function save(provider: string) {
     setBusy(provider);
+    setSaveError((prev) => ({ ...prev, [provider]: "" }));
     try {
       await api.put(`/integrations/${provider}`, { credentials: drafts[provider] ?? {} });
       load();
+    } catch (err: any) {
+      setSaveError((prev) => ({ ...prev, [provider]: err.message ?? "Save failed" }));
     } finally {
       setBusy(null);
     }
@@ -129,6 +133,7 @@ export default function IntegrationsPage() {
                 Disconnect
               </button>
             </div>
+            {saveError[intg.provider] && <div className="field-error">{saveError[intg.provider]}</div>}
             {testResult[intg.provider] && <div className="provenance-tag" style={{ marginTop: 6 }}>{testResult[intg.provider]}</div>}
           </div>
         ))}
