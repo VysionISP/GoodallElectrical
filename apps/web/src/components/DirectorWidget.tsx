@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api.js";
+import { formatAgentError } from "../lib/formatError.js";
 import type { AgentTask, AiQuestion, Approval, DirectorMessage, Notification } from "../lib/types.js";
 import "./DirectorWidget.css";
 
@@ -274,7 +275,7 @@ export default function DirectorWidget() {
                         every failure looked identical and undiagnosable. */}
                     {t.status === "failed" && t.error && (
                       <div className="director-list-meta" style={{ color: "var(--danger)", wordBreak: "break-word" }}>
-                        {t.error}
+                        {formatAgentError(t.error)}
                       </div>
                     )}
                   </div>

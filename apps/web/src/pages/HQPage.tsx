@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import RoomMap from "../components/RoomMap.js";
 import { api } from "../lib/api.js";
+import { formatAgentError } from "../lib/formatError.js";
 import type { AgentTask, Approval, JobListItem, Notification } from "../lib/types.js";
 
 export default function HQPage() {
@@ -126,19 +127,8 @@ function ActivityBanner({ tasks }: { tasks: AgentTask[] | null }) {
           <span style={{ fontSize: 12, color: "var(--text-dim)" }}>
             {t.task_type} · {ageOf(t)}
           </span>
-          <div
-            style={{
-              fontSize: 12,
-              color: "var(--text-dim)",
-              marginTop: 4,
-              wordBreak: "break-word",
-              // A provider can return a huge payload; keep it scannable
-              // rather than letting one error swallow the page.
-              maxHeight: 88,
-              overflowY: "auto",
-            }}
-          >
-            {t.error ?? t.message ?? "No reason was recorded."}
+          <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4, wordBreak: "break-word" }}>
+            {formatAgentError(t.error ?? t.message)}
           </div>
         </div>
       ))}
