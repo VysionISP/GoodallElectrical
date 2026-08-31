@@ -4,6 +4,7 @@ import { getDb } from "../db/connection.js";
 import { newId, nowIso } from "../lib/ids.js";
 import { recordAudit } from "../lib/audit.js";
 import { createNotification } from "../lib/notifications.js";
+import { executeFergusWriteRequest, markFergusWriteRejected } from "../integrations/fergusWrites.js";
 
 const router = Router();
 
@@ -61,7 +62,7 @@ const decisionSchema = z.object({
   decidedBy: z.string().default("owner"),
 });
 
-router.post("/:id/decide", (req, res) => {
+router.post("/:id/decide", async (req, res) => {
   const parsed = decisionSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "INVALID_BODY", details: parsed.error.flatten() });
   const db = getDb();
@@ -126,6 +127,20 @@ router.post("/:id/decide", (req, res) => {
     entityId: approval.entity_id,
     details: { action: approval.action, notes: parsed.data.notes },
   });
+
+  // A Fergus write is the one approval that performs a real, irreversible
+  // change to the owner's live business system, so it executes here, on
+  // the owner's decision, and nowhere else.
+  if (approval.action === "fergus_write") {
+    if (parsed.data.decision === "approved") {
+      const result = await executeFergusWriteRequest(approval.entity_id);
+      return res.json({
+        approval: db.prepare("SELECT * FROM approvals WHERE id = ?").get(approval.id),
+        fergusWrite: result,
+      });
+    }
+    markFergusWriteRejected(approval.entity_id);
+  }
 
   res.json({ approval: db.prepare("SELECT * FROM approvals WHERE id = ?").get(approval.id) });
 });
