@@ -71,15 +71,26 @@ function baseUrl(creds: FergusCredentials): string {
 
 const REQUEST_TIMEOUT_MS = 20_000;
 
-async function fergusFetch(creds: FergusCredentials, path: string, retrying = false): Promise<any> {
+export type FergusMethod = "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
+
+async function fergusFetch(
+  creds: FergusCredentials,
+  path: string,
+  opts: { method?: FergusMethod; body?: unknown } = {},
+  retrying = false
+): Promise<any> {
   const url = `${baseUrl(creds)}${path}`;
+  const method = opts.method ?? "GET";
   let res: Response;
   try {
     res = await fetch(url, {
+      method,
       headers: {
         Authorization: `Bearer ${creds.apiKey}`,
         Accept: "application/json",
+        ...(opts.body !== undefined ? { "Content-Type": "application/json" } : {}),
       },
+      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
       // Without this, a hung connection to Fergus leaves the whole sync
       // loop frozen on one job forever -- the caller never gets a
       // rejection to catch, so the agent_task's "Reviewing X" message
@@ -98,14 +109,38 @@ async function fergusFetch(creds: FergusCredentials, path: string, retrying = fa
   if (res.status === 429 && !retrying) {
     const retryAfterSeconds = Math.min(Number(res.headers.get("retry-after")) || 2, 10);
     await new Promise((resolve) => setTimeout(resolve, retryAfterSeconds * 1000));
-    return fergusFetch(creds, path, true);
+    // Only a GET is safe to replay blindly. Retrying a write risks
+    // performing it twice -- two invoices, two status changes -- against
+    // the live business system, so a rate-limited write surfaces instead.
+    if (method === "GET") return fergusFetch(creds, path, opts, true);
+    throw new Error(`Fergus rate-limited this ${method} to ${path}. Not retried automatically, to avoid doing it twice.`);
   }
 
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new Error(`Fergus API ${res.status} ${res.statusText} on ${path}: ${body.slice(0, 500)}`);
+    throw new Error(`Fergus API ${res.status} ${res.statusText} on ${method} ${path}: ${body.slice(0, 500)}`);
   }
+  if (res.status === 204) return null;
   return res.json();
+}
+
+/**
+ * Performs a WRITE against the live Fergus account.
+ *
+ * Deliberately separate from the read path, and deliberately not called by
+ * any agent directly: anything that changes the owner's real business
+ * system goes through the approval firewall first, exactly like sending a
+ * quote or an invoice does. An AI marking the wrong job complete, or
+ * invoicing the wrong customer, is not an error you can take back with an
+ * undo button.
+ */
+export async function fergusWrite(
+  creds: FergusCredentials,
+  method: Exclude<FergusMethod, "GET">,
+  path: string,
+  body?: unknown
+): Promise<any> {
+  return fergusFetch(creds, path, { method, body });
 }
 
 export async function testFergusConnection(creds: FergusCredentials): Promise<{ ok: true; detail?: string }> {
