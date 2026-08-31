@@ -49,6 +49,12 @@ export default function DirectorWidget() {
           setTasks(r.tasks);
           setActivityNotifs(r.notifications);
         });
+      // Viewing Activity is how unread notifications get acknowledged --
+      // without this the FAB badge counted them forever with no way to
+      // clear it, even though they were visible right here.
+      if (unreadCount > 0) {
+        api.post("/notifications/read-all").then(() => setUnreadCount(0));
+      }
     }
   }, [open, tab]);
 
@@ -108,7 +114,7 @@ export default function DirectorWidget() {
               Needs You{needsYouCount > 0 ? ` (${needsYouCount})` : ""}
             </button>
             <button className={tab === "activity" ? "active" : ""} onClick={() => setTab("activity")}>
-              Activity
+              Activity{unreadCount > 0 ? ` (${unreadCount})` : ""}
             </button>
           </div>
 
