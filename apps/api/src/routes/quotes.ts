@@ -76,6 +76,18 @@ router.post("/", (req, res) => {
   const id = newId("quote");
   const now = nowIso();
 
+  // A quote raised against a job belongs to that job's customer. Deriving it
+  // here rather than trusting the caller to pass both means the PDF always
+  // has a real customer name on it instead of a blank -- and it can't drift
+  // out of sync with the job it was raised from.
+  let customerId = parsed.data.customerId ?? null;
+  if (!customerId && parsed.data.jobId) {
+    const job = db.prepare("SELECT customer_id FROM jobs WHERE id = ?").get(parsed.data.jobId) as
+      | { customer_id: string | null }
+      | undefined;
+    customerId = job?.customer_id ?? null;
+  }
+
   const materialCost = sumCategory(parsed.data.items, "materials", "cost");
   const labourCost = sumCategory(parsed.data.items, "labour", "cost");
   const otherCost = sumCategory(parsed.data.items, "testing", "cost") + sumCategory(parsed.data.items, "other", "cost");
@@ -92,7 +104,7 @@ router.post("/", (req, res) => {
   ).run(
     id,
     parsed.data.jobId ?? null,
-    parsed.data.customerId ?? null,
+    customerId,
     round2(subtotal),
     gst,
     total,

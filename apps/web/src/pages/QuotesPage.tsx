@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../lib/api.js";
 import { money, percent } from "../lib/format.js";
 
@@ -49,6 +50,10 @@ export default function QuotesPage() {
         Draft → submitted for approval → approved → sent. The API refuses /send with 403 QUOTE_NOT_APPROVED at any
         earlier stage, regardless of what this UI shows.
       </div>
+
+      <Link className="btn" to="/quotes/new" style={{ marginBottom: 16 }}>
+        + New quote
+      </Link>
 
       {quotes === null && <div className="card">Loading…</div>}
       {quotes && quotes.length === 0 && <div className="card">No quotes yet.</div>}

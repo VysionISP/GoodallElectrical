@@ -6,6 +6,7 @@ import JobDetailPage from "./pages/JobDetailPage.js";
 import ApprovalsPage from "./pages/ApprovalsPage.js";
 import IntegrationsPage from "./pages/IntegrationsPage.js";
 import QuotesPage from "./pages/QuotesPage.js";
+import QuoteBuilderPage from "./pages/QuoteBuilderPage.js";
 import LeadsPage from "./pages/LeadsPage.js";
 import LeadDetailPage from "./pages/LeadDetailPage.js";
 import BusinessProfilePage from "./pages/BusinessProfilePage.js";
@@ -44,6 +45,7 @@ export default function App() {
           <Route path="/jobs" element={<JobsFloorPage />} />
           <Route path="/jobs/:id" element={<JobDetailPage />} />
           <Route path="/quotes" element={<QuotesPage />} />
+          <Route path="/quotes/new" element={<QuoteBuilderPage />} />
           <Route path="/finance" element={<FinancePage />} />
           <Route path="/debtors" element={<DebtorsPage />} />
           <Route path="/leads" element={<LeadsPage />} />

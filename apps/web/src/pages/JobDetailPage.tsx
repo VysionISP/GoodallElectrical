@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { api } from "../lib/api.js";
 import { money, percent, provenanceLabel } from "../lib/format.js";
 
@@ -55,6 +55,10 @@ export default function JobDetailPage() {
         <span className="pill pill-info">{job.source === "fergus" ? "LIVE FROM FERGUS" : "MANUAL"}</span>{" "}
         {job.status ?? "Unknown status"}
       </div>
+
+      <Link className="btn" to={`/quotes/new?jobId=${job.id}`} style={{ marginBottom: 16 }}>
+        Create quote for this job
+      </Link>
 
       <div className="job-detail-grid">
         <div className="card">
