@@ -1,3 +1,8 @@
+// MUST come before importing connection.js, which reads DATABASE_PATH at
+// import time. Without this, `npm run migrate` migrated the DEFAULT database
+// rather than the one .env points the running app at -- so migrations could
+// silently be applied to a different file than the app actually uses.
+import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";

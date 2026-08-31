@@ -1,3 +1,10 @@
+// MUST come before anything that reads process.env (db/connection.ts reads
+// DATABASE_PATH at import time). Without this, doctor would silently open
+// the DEFAULT database rather than the one .env points the running app at,
+// and then cheerfully report every table as empty.
+import "dotenv/config";
+import fs from "node:fs";
+import path from "node:path";
 import { getDb } from "./db/connection.js";
 import { runMigrations } from "./db/migrate.js";
 import { listIntegrations } from "./integrations/store.js";
@@ -32,7 +39,23 @@ export function runDoctor() {
   console.log(new Date().toISOString());
 
   heading("Environment");
-  console.log(`DATABASE_PATH        : ${process.env.DATABASE_PATH ?? "./data/goodall.db (default)"}`);
+  const envFile = path.resolve(process.cwd(), ".env");
+  console.log(`Working directory    : ${process.cwd()}`);
+  console.log(`.env file            : ${fs.existsSync(envFile) ? envFile : `NOT FOUND at ${envFile}`}`);
+  console.log(`DATABASE_PATH        : ${process.env.DATABASE_PATH ?? "./data/goodall.db (default -- not set in .env)"}`);
+
+  // The single most misleading failure mode: reading a different database
+  // than the running app writes to, and reporting "0 jobs" from an empty
+  // file that was created on the spot. Show the resolved path and size so
+  // a mismatch is obvious instead of silent.
+  const dbPath = path.resolve(process.cwd(), process.env.DATABASE_PATH ?? "./data/goodall.db");
+  const dbExists = fs.existsSync(dbPath);
+  console.log(`Database resolves to : ${dbPath}`);
+  console.log(
+    `Database file        : ${
+      dbExists ? `exists, ${(fs.statSync(dbPath).size / 1024).toFixed(1)} KB` : "DOES NOT EXIST YET (a new empty one will be created)"
+    }`
+  );
   console.log(`CREDENTIAL_ENCRYPTION_KEY set: ${process.env.CREDENTIAL_ENCRYPTION_KEY ? "yes" : "NO -- integrations cannot be read or saved"}`);
   console.log(`OPENAI_MODEL         : ${process.env.OPENAI_MODEL ?? "gpt-4o-mini (default)"}`);
   console.log(`Node                 : ${process.version}`);
