@@ -68,4 +68,32 @@ router.post("/questions/:id/answer", (req, res) => {
   res.json({ ok: true });
 });
 
+/**
+ * One-time cleanup for jobs that got flooded with multiple separate
+ * questions under the old per-fact review logic (fixed to ask one
+ * consolidated question per job instead). Dismisses those open questions
+ * and clears the affected jobs' _ai_reviewed marker so the next
+ * background review cycle re-reviews them under the new, consolidated
+ * behavior rather than leaving them permanently unreviewed.
+ */
+router.post("/reset-job-reviews", (_req, res) => {
+  const db = getDb();
+  const now = nowIso();
+
+  const affectedJobs = db
+    .prepare("SELECT DISTINCT entity_id as job_id FROM ai_questions WHERE status = 'open' AND agent = 'operations_ai' AND entity_type = 'job'")
+    .all() as { job_id: string }[];
+
+  const dismissed = db
+    .prepare("UPDATE ai_questions SET status = 'dismissed', updated_at = ? WHERE status = 'open' AND agent = 'operations_ai' AND entity_type = 'job'")
+    .run(now);
+
+  const clearReviewed = db.prepare("DELETE FROM job_context WHERE job_id = ? AND key = '_ai_reviewed'");
+  for (const { job_id } of affectedJobs) {
+    clearReviewed.run(job_id);
+  }
+
+  res.json({ ok: true, questionsDismissed: dismissed.changes, jobsQueuedForReReview: affectedJobs.length });
+});
+
 export default router;

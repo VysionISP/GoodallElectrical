@@ -7,6 +7,10 @@ import { recordAudit } from "../lib/audit.js";
 
 const MODEL = process.env.OPENAI_MODEL ?? "gpt-4o-mini";
 const MAX_JOBS_PER_CYCLE = 5;
+// A person wouldn't keep asking you new things while a dozen questions
+// already sit unanswered -- back off once the owner is clearly behind, and
+// let them catch up before piling on more.
+const MAX_OPEN_JOB_QUESTIONS = 6;
 
 /** Inserts an open question only if an identical open one doesn't already exist -- keeps repeated review cycles from spamming duplicates. */
 function ensureOpenQuestion(agent: AgentName, entityType: string | null, entityId: string | null, question: string): boolean {
@@ -47,20 +51,22 @@ const JOB_REVIEW_SCHEMA = {
     type: "object",
     additionalProperties: false,
     properties: {
-      questions: {
-        type: "array",
+      needsInput: { type: "boolean", description: "Whether this job is missing anything worth asking about right now." },
+      question: {
+        type: "string",
         description:
-          "Specific operational questions needed to forecast labour/profitability for this job -- crew size, " +
-          "night work, shutdown timing, materials ordered, access, inspection, temporary power, etc. Only ask " +
-          "what's actually relevant to THIS job given its title/description; skip anything the job clearly " +
-          "doesn't involve. Return an empty list if there's nothing worth asking yet.",
-        items: { type: "string" },
+          "If needsInput is true: ONE natural message covering everything missing for this job, phrased the way " +
+          "a person would actually ask it -- e.g. 'For ELEC-3376 I need a few things: crew size, whether access " +
+          "is confirmed, and what inspection is needed.' Pick at most the 2-3 most important gaps, not an " +
+          "exhaustive checklist. Only ask about things actually relevant to THIS job's title/description. If " +
+          "needsInput is false, this must be an empty string.",
       },
     },
-    required: ["questions"],
+    required: ["needsInput", "question"],
   },
 } as const;
 
+/** Consolidates everything missing about a job into ONE question, the way a person would actually ask about it -- not one card per fact. */
 async function reviewJob(taskId: string, job: any): Promise<number> {
   const db = getDb();
   const client = getOpenAiClient();
@@ -74,9 +80,11 @@ async function reviewJob(taskId: string, job: any): Promise<number> {
         role: "system",
         content:
           "You are Operations AI for Goodall Electrical, an electrical contracting company, reviewing a job " +
-          "just imported from Fergus. Decide what operational information is still missing and worth asking the " +
-          "owner about. Never invent facts about the job -- if the title/description gives no reason to think " +
-          "something like a shutdown or night work is involved, don't ask about it.",
+          "just imported from Fergus. Decide whether there's anything worth asking the owner about right now -- " +
+          "at most the 2-3 most important gaps, combined into one natural message, not a checklist of everything " +
+          "that could theoretically be unknown. Never invent facts about the job -- if the title/description " +
+          "gives no reason to think something like a shutdown or night work is involved, don't ask about it. A " +
+          "busy owner is reading this among many other jobs, so be selective, not exhaustive.",
       },
       {
         role: "user",
@@ -90,10 +98,13 @@ async function reviewJob(taskId: string, job: any): Promise<number> {
     ],
   });
 
-  const parsed = JSON.parse(completion.choices[0]?.message?.content ?? "{}") as { questions: string[] };
+  const parsed = JSON.parse(completion.choices[0]?.message?.content ?? "{}") as {
+    needsInput: boolean;
+    question: string;
+  };
   let raised = 0;
-  for (const q of parsed.questions) {
-    if (ensureOpenQuestion("operations_ai", "job", job.id, q)) raised++;
+  if (parsed.needsInput && parsed.question.trim()) {
+    if (ensureOpenQuestion("operations_ai", "job", job.id, parsed.question.trim())) raised = 1;
   }
 
   // Mark reviewed regardless of outcome so this job isn't re-processed
@@ -132,6 +143,21 @@ export async function runBackgroundReview(): Promise<{ taskId: string; questions
     questionsRaised += checkBusinessProfileGap();
 
     const db = getDb();
+    const openJobQuestions = db
+      .prepare("SELECT COUNT(*) as c FROM ai_questions WHERE status = 'open' AND agent = 'operations_ai'")
+      .get() as { c: number };
+
+    if (openJobQuestions.c >= MAX_OPEN_JOB_QUESTIONS) {
+      updateAgentTask(taskId, {
+        status: "completed",
+        progress: 100,
+        message: `Holding off -- ${openJobQuestions.c} job question(s) already waiting on you`,
+      });
+      recordAudit({ actor: "director", action: "background_review_throttled", details: { openJobQuestions: openJobQuestions.c } });
+      return { taskId, questionsRaised, jobsReviewed };
+    }
+
+    const roomToReview = MAX_OPEN_JOB_QUESTIONS - openJobQuestions.c;
     const unreviewed = db
       .prepare(
         `SELECT j.* FROM jobs j
@@ -139,7 +165,7 @@ export async function runBackgroundReview(): Promise<{ taskId: string; questions
          AND NOT EXISTS (SELECT 1 FROM job_context jc WHERE jc.job_id = j.id AND jc.key = '_ai_reviewed')
          ORDER BY j.updated_at DESC LIMIT ?`
       )
-      .all(MAX_JOBS_PER_CYCLE) as any[];
+      .all(Math.min(MAX_JOBS_PER_CYCLE, roomToReview)) as any[];
 
     for (const job of unreviewed) {
       updateAgentTask(taskId, {
