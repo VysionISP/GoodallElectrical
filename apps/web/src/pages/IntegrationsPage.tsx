@@ -49,6 +49,7 @@ export default function IntegrationsPage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [aiProvider, setAiProvider] = useState<"openai" | "openrouter" | null>(null);
   const [aiProviderBusy, setAiProviderBusy] = useState(false);
+  const [aiProviderError, setAiProviderError] = useState<string | null>(null);
 
   function load() {
     api.get<{ integrations: IntegrationSummary[] }>("/integrations").then((r) => setIntegrations(r.integrations));
@@ -81,11 +82,12 @@ export default function IntegrationsPage() {
 
   async function switchAiProvider(provider: "openai" | "openrouter") {
     setAiProviderBusy(true);
+    setAiProviderError(null);
     try {
       await api.put("/integrations/ai-provider", { provider });
       setAiProvider(provider);
     } catch (err: any) {
-      alert(`Couldn't switch AI provider: ${err.message}`);
+      setAiProviderError(err.message ?? "Couldn't switch AI provider");
     } finally {
       setAiProviderBusy(false);
     }
@@ -155,6 +157,19 @@ export default function IntegrationsPage() {
             OpenRouter (Hermes)
           </button>
         </div>
+        {aiProviderError && <div className="field-error">{aiProviderError}</div>}
+        {(() => {
+          const active = integrations.find((i) => i.provider === aiProvider);
+          if (aiProvider && active && !active.configured) {
+            return (
+              <div className="field-error">
+                {aiProvider === "openai" ? "OpenAI" : "OpenRouter"} is the active provider but has no API key saved, so every
+                AI agent is currently switched off. Save a key below, or switch to the other provider.
+              </div>
+            );
+          }
+          return null;
+        })()}
       </div>
 
       <div className="integrations-grid">

@@ -48,7 +48,23 @@ const aiProviderSchema = z.object({ provider: z.enum(["openai", "openrouter"]) }
 router.put("/ai-provider", (req, res) => {
   const parsed = aiProviderSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "INVALID_BODY", details: parsed.error.flatten() });
-  setActiveAiProvider(parsed.data.provider);
+
+  // Switching to a provider with no API key silently switches off every
+  // agent in the app -- the Director, job review, estimating, leads, the
+  // lot -- while a working key for the other provider sits right there
+  // unused. Refuse the switch and say so, rather than letting one click
+  // take the whole system dark.
+  const target = parsed.data.provider;
+  const creds = getIntegrationCredentials<{ apiKey: string }>(target);
+  if (!creds?.apiKey) {
+    const label = target === "openai" ? "OpenAI" : "OpenRouter";
+    return res.status(400).json({
+      error: "PROVIDER_NOT_CONFIGURED",
+      message: `Can't switch to ${label} -- no ${label} API key is saved yet. Save the key on the ${label} card first, then switch. (Nothing has changed; your current provider is still active.)`,
+    });
+  }
+
+  setActiveAiProvider(target);
   recordAudit({ actor: "owner", action: "ai_provider_changed", details: { provider: parsed.data.provider } });
   res.json({ ok: true, provider: parsed.data.provider });
 });

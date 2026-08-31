@@ -1,6 +1,6 @@
 import { getDb } from "../db/connection.js";
 import { newId, nowIso } from "../lib/ids.js";
-import { getActiveChatClient, chatJson } from "../integrations/llm.js";
+import { getActiveChatClient, chatJson, describeMissingChatClient } from "../integrations/llm.js";
 import { buildDirectorContext, findJobByNumber } from "./directorContext.js";
 import { recordAudit } from "../lib/audit.js";
 import { createNotification } from "../lib/notifications.js";
@@ -114,8 +114,7 @@ export async function runDirectorTurn(ownerMessage: string): Promise<DirectorTur
 
   const chat = getActiveChatClient();
   if (!chat) {
-    const reply =
-      "Neither OpenAI nor OpenRouter is configured yet, so I can't think this through. Add an API key under Integrations and I'll be able to respond.";
+    const reply = describeMissingChatClient();
     const directorMessageId = newId("dmsg");
     db.prepare(
       `INSERT INTO director_messages (id, role, content, created_at) VALUES (?, 'director', ?, ?)`

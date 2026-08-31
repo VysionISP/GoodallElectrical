@@ -33,6 +33,31 @@ export function setActiveAiProvider(provider: AiProvider): void {
  * plain, honest state, and this preserves exactly that behavior for
  * whichever provider is actually selected.
  */
+/**
+ * Explains, in the owner's terms, why there is no usable AI client right
+ * now. The old message blamed both providers ("neither is configured"),
+ * which is actively wrong in the most common case: a perfectly good
+ * OpenAI key is saved, but the provider switch was flipped to OpenRouter
+ * before a key was added there, so every agent went dark for a reason the
+ * message never mentioned.
+ */
+export function describeMissingChatClient(): string {
+  const provider = getActiveAiProvider();
+  const other = provider === "openrouter" ? "openai" : "openrouter";
+  const otherConfigured = !!getIntegrationCredentials<{ apiKey: string }>(other as any)?.apiKey;
+  const otherLabel = other === "openai" ? "OpenAI" : "OpenRouter";
+  const activeLabel = provider === "openai" ? "OpenAI" : "OpenRouter";
+
+  if (otherConfigured) {
+    return (
+      `The AI provider is set to ${activeLabel}, but no ${activeLabel} API key is saved -- so every agent is switched off, ` +
+      `even though your ${otherLabel} key is still there. Either add an ${activeLabel} key under Integrations, ` +
+      `or switch the AI provider back to ${otherLabel}.`
+    );
+  }
+  return `No ${activeLabel} API key is saved, so I can't think this through. Add one under Integrations and I'll be able to respond.`;
+}
+
 export function getActiveChatClient(): ChatClient | null {
   const provider = getActiveAiProvider();
   if (provider === "openrouter") {
