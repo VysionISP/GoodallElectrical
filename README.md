@@ -265,6 +265,56 @@ the OpenAI SDK's request shape.
   the `CHECK` constraint is still actually enforced afterward (an invalid
   provider name is still rejected), not silently dropped.
 
+## Bringing in new work without being asked
+
+Direct framing from the owner: this whole project is meant to remove him from
+running the business as much as possible. Asked which lever to pull first, the
+answer was bringing more work in and managing jobs -- not loosening the
+approval firewall (that stays a hard rule: nothing customer-facing or
+money-moving sends without an explicit approve click, no matter how "removed"
+the owner gets from day-to-day running).
+
+- **`apps/api/src/agents/growthEngine.ts` — `runAutonomousGrowthCycle()`**:
+  the exact same search -> research -> draft pipeline the owner could already
+  trigger by hand from the Leads page ("Sweep my service area" button), now
+  run automatically as part of the existing 30-minute background review
+  (`backgroundReview.ts`), gated to at most once every 24 hours since Google
+  Places charges per call. When it runs: sweeps the owner's service area for
+  new leads, researches every new one (Research AI scores it), and for
+  anything that scores 60+ with a contact email on file, drafts outreach
+  (Sales AI) and submits it straight into Approvals -- identical to the
+  manual "submit for approval" step, just not waiting for the owner to click
+  it. The only thing still gated on the owner is the one thing that always
+  is: approving before anything actually goes to a real business. When a
+  sweep finds or drafts anything, the Director reports back in the chat
+  unprompted (`postGrowthCycleUpdate()`); a sweep that finds nothing new
+  stays quiet rather than interrupting daily.
+  - Verified against real seeded data (not against the live Google Places/
+    OpenAI APIs, which need real keys): both gates -- no Google Places key
+    configured, and the 24-hour floor -- correctly no-op without attempting
+    a sweep; the exact SQL used to pick which leads get researched and which
+    get outreach drafted was checked against seeded leads in every relevant
+    state (new/unresearched, qualified-with-email, below the score
+    threshold, missing an email, already has a draft) and picked only the
+    right one each time; an expected "not set up yet" failure (no AI
+    provider configured) is recorded as a quiet completed no-op, not a false
+    failure alarm; and a full `runBackgroundReview()` run with the growth
+    cycle wired in still completes cleanly end to end.
+- **Job management got one real addition**: the existing spontaneous
+  check-in (see below) now also looks for `ai_questions` that have sat open
+  48+ hours unanswered and gently nudges about the oldest one, instead of
+  only ever appearing once and then sitting silently in "Needs You" forever
+  if the owner doesn't happen to look. Verified with a seeded 72-hour-old
+  question and a 2-hour-old one that the stale-detection query picks up the
+  old one (with its job number) and correctly ignores the fresh one.
+- **What this doesn't do**: it doesn't do real job *management* in the
+  scheduling/dispatch sense -- no crew scheduling, no dependency tracking
+  between phases, no "job starts in 3 days and X still isn't confirmed"
+  urgency logic, because the current schema has no start-date/scheduling
+  data to ground that in (adding it would mean inventing dates, which this
+  build refuses to do). The stale-question nudge above is the honest, real
+  version of "manage jobs" that's actually implemented right now.
+
 ## The Director now runs unprompted, not just when you message it
 
 Two real gaps, both from direct feedback: the owner shouldn't have to visit a

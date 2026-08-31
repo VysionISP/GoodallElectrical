@@ -4,6 +4,11 @@ import { createAgentTask, updateAgentTask, logAgentEvent, type AgentName } from 
 import { createNotification } from "../lib/notifications.js";
 import { getActiveChatClient, chatJson } from "../integrations/llm.js";
 import { recordAudit } from "../lib/audit.js";
+import { runAutonomousGrowthCycle, postGrowthCycleUpdate } from "./growthEngine.js";
+
+// How stale an unanswered job question has to be before a check-in nudges
+// the owner about it specifically, instead of just generic small talk.
+const STALE_QUESTION_HOURS = 48;
 
 const MAX_JOBS_PER_CYCLE = 5;
 // A person wouldn't keep asking you new things while a dozen questions
@@ -251,6 +256,19 @@ const CHECKIN_SCHEMA = {
  * raising (see runBackgroundReview) -- a real briefing always takes priority
  * over small talk.
  */
+function getStaleQuestions(hours: number): { jobNumber: string | null; question: string }[] {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT q.question, j.job_number
+       FROM ai_questions q LEFT JOIN jobs j ON j.id = q.entity_id AND q.entity_type = 'job'
+       WHERE q.status = 'open' AND (julianday('now') - julianday(q.created_at)) * 24 >= ?
+       ORDER BY q.created_at ASC LIMIT 5`
+    )
+    .all(hours) as { question: string; job_number: string | null }[];
+  return rows.map((r) => ({ jobNumber: r.job_number, question: r.question }));
+}
+
 async function maybePostSpontaneousCheckin(): Promise<boolean> {
   const db = getDb();
   const last = db.prepare("SELECT created_at FROM director_messages WHERE role = 'director' ORDER BY created_at DESC LIMIT 1").get() as
@@ -272,13 +290,25 @@ async function maybePostSpontaneousCheckin(): Promise<boolean> {
     .prepare("SELECT COALESCE(SUM(amount_due), 0) as total FROM invoices WHERE status = 'overdue'")
     .get() as { total: number };
   const openQuestions = db.prepare("SELECT COUNT(*) as c FROM ai_questions WHERE status = 'open'").get() as { c: number };
+  // Jobs are the "manage jobs" half of the check-in's job -- something the
+  // owner hasn't answered in 48+ hours is exactly the kind of thing a
+  // real ops manager would bring up unprompted rather than let sit forever
+  // in a tab nobody's looking at.
+  const staleQuestions = getStaleQuestions(STALE_QUESTION_HOURS);
 
-  const stats = { activeJobs: activeJobs.c, openQuotes: openQuotes.c, overdueReceivables: overdueTotal.total, openQuestions: openQuestions.c };
+  const stats = {
+    activeJobs: activeJobs.c,
+    openQuotes: openQuotes.c,
+    overdueReceivables: overdueTotal.total,
+    openQuestions: openQuestions.c,
+    staleQuestions,
+  };
 
   const chat = getActiveChatClient();
   let message: string;
   if (!chat) {
-    message = `Just checking in -- ${stats.activeJobs} active job(s), ${stats.openQuotes} quote(s) in play, nothing urgent from me right now.`;
+    const staleNote = staleQuestions.length > 0 ? ` Still waiting on: ${staleQuestions[0].question}` : "";
+    message = `Just checking in -- ${stats.activeJobs} active job(s), ${stats.openQuotes} quote(s) in play.${staleNote}`;
   } else {
     try {
       const raw = await chatJson(chat, {
@@ -289,7 +319,8 @@ async function maybePostSpontaneousCheckin(): Promise<boolean> {
             content:
               "You are the AI Director for Goodall Electrical, an electrical contracting company. Nothing is wrong " +
               "and there's no open question -- you're just checking in with the owner unprompted, the way a real " +
-              "operations manager does sometimes, not because something needs them.",
+              "operations manager does sometimes, not because something needs them. If staleQuestions is non-empty, " +
+              "gently mention the oldest one as a reminder (don't list them all) -- otherwise ignore that field.",
           },
           { role: "user", content: JSON.stringify(stats) },
         ],
@@ -316,6 +347,9 @@ async function maybePostSpontaneousCheckin(): Promise<boolean> {
  * something is missing and go looking for a settings page. When it finds
  * something new, it also speaks up in the chat itself (see
  * postProactiveBriefing) instead of only leaving silent question cards.
+ * Also runs the autonomous growth cycle (see growthEngine.ts) -- bringing
+ * in new leads and drafting outreach without being asked, gated to at most
+ * once a day.
  */
 export async function runBackgroundReview(): Promise<{ taskId: string; questionsRaised: number; jobsReviewed: number }> {
   const taskId = createAgentTask({
@@ -377,6 +411,19 @@ export async function runBackgroundReview(): Promise<{ taskId: string; questions
       } catch (err: any) {
         logAgentEvent({ taskId, agent: "operations_ai", eventType: "job_review_failed", message: err?.message ?? String(err) });
       }
+    }
+
+    // Bring more work in without being asked -- independently gated (once a
+    // day at most, since Google Places charges per call) so this is a no-op
+    // on almost every 30-minute cycle and only actually sweeps when its own
+    // floor has cleared.
+    try {
+      const growth = await runAutonomousGrowthCycle();
+      if (growth.ran && (growth.newLeadsFound > 0 || growth.outreachDrafted > 0)) {
+        await postGrowthCycleUpdate(growth);
+      }
+    } catch (err: any) {
+      logAgentEvent({ taskId, agent: "lead_hunter", eventType: "growth_cycle_error", message: err?.message ?? String(err) });
     }
 
     let spokeUp = false;
