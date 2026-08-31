@@ -333,8 +333,11 @@ async function maybePostSpontaneousCheckin(): Promise<boolean> {
     }
   }
 
+  // Deliberately no notification: a casual check-in is small talk, and it
+  // is already sitting in the chat where the owner will see it. Badging it
+  // turned "the Director said hello" into an alert demanding attention,
+  // which is how the counter climbed into the dozens.
   db.prepare(`INSERT INTO director_messages (id, role, content, created_at) VALUES (?, 'director', ?, ?)`).run(newId("dmsg"), message, nowIso());
-  createNotification({ type: "director_checkin", severity: "info", title: "Director checked in", message });
   return true;
 }
 

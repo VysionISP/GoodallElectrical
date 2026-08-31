@@ -20,7 +20,12 @@ export default function DirectorWidget() {
   const [answering, setAnswering] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  // What's actually waiting on the owner: open questions, pending
+  // approvals, and unread problems (sync failures and the like). The API
+  // already excludes notifications that merely mirror a question or an
+  // approval, so nothing here is counted twice.
   const needsYouCount = questions.length + approvals.length;
+  const badgeCount = needsYouCount + unreadCount;
 
   async function answerQuestion(q: AiQuestion) {
     const answer = answerDrafts[q.id]?.trim();
@@ -254,7 +259,7 @@ export default function DirectorWidget() {
       )}
 
       <button className="director-fab" onClick={() => setOpen((v) => !v)}>
-        {unreadCount + needsYouCount > 0 && <span className="director-fab-badge">{unreadCount + needsYouCount}</span>}
+        {badgeCount > 0 && <span className="director-fab-badge">{badgeCount}</span>}
         <span className="director-fab-dot" />
         AI
       </button>
