@@ -84,7 +84,29 @@ export async function searchTextRaw(
 
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new Error(`Google Places API ${res.status} ${res.statusText}: ${body.slice(0, 500)}`);
+    // Google's error payload is deeply nested and repeats its own message
+    // several times over; dumped raw it fills the screen and buries the one
+    // word that matters. Pull out the status and message, and add the fix
+    // for the causes that actually come up.
+    let detail = body.slice(0, 300);
+    let hint = "";
+    try {
+      const parsed = JSON.parse(body) as { error?: { status?: string; message?: string } };
+      const status = parsed.error?.status ?? "";
+      const message = parsed.error?.message ?? "";
+      if (status || message) detail = [status, message].filter(Boolean).join(": ");
+      if (status === "INVALID_ARGUMENT" && /API key not valid/i.test(message)) {
+        hint =
+          " -- the key itself was rejected. Check you pasted the whole key, and in Google Cloud check the key's " +
+          "Application restrictions (a key restricted to HTTP referrers cannot be used from a server -- use None or IP) " +
+          "and its API restrictions (must include 'Places API (New)').";
+      } else if (status === "PERMISSION_DENIED") {
+        hint = " -- enable 'Places API (New)' on this Google Cloud project and make sure billing is active.";
+      }
+    } catch {
+      // Not JSON -- fall back to the truncated raw body.
+    }
+    throw new Error(`Google Places ${res.status}: ${detail}${hint}`);
   }
   const data = (await res.json()) as { places?: any[] };
   return data.places ?? [];

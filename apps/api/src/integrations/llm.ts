@@ -107,6 +107,20 @@ function extractJsonText(raw: string): string {
  * OpenAI itself is expected to always support strict mode, so a failure
  * there is treated as a real error, not something to paper over.
  */
+/**
+ * Providers return bare auth errors like "401 User not found." with no
+ * indication of WHICH provider or key is being rejected -- unreadable when
+ * two are configured and one is selected. Attach that context.
+ */
+function describeAuthFailure(chat: ChatClient, err: any): Error {
+  const label = chat.provider === "openai" ? "OpenAI" : "OpenRouter";
+  return new Error(
+    `${label} rejected the API key (${err?.status ?? "error"}: ${err?.message ?? err}). ` +
+      `The key saved on the ${label} card in Integrations is invalid, revoked, or out of credit. ` +
+      `Model in use: ${chat.model}.`
+  );
+}
+
 export async function chatJson(
   chat: ChatClient,
   params: { schema: JsonSchemaDef; messages: OpenAI.Chat.ChatCompletionMessageParam[] }
@@ -121,6 +135,9 @@ export async function chatJson(
     JSON.parse(raw); // throws if strict mode wasn't actually honoured and this isn't valid JSON
     return raw;
   } catch (err: any) {
+    // An auth failure is never fixed by retrying in another response
+    // format -- surface it immediately, naming the provider.
+    if (err?.status === 401 || err?.status === 403) throw describeAuthFailure(chat, err);
     if (chat.provider === "openai") throw err;
 
     // A missing/misspelled model slug is the most common way an OpenRouter

@@ -169,6 +169,26 @@ export async function suggestSearchQueries(): Promise<string[]> {
 }
 
 const MAX_SWEEP_QUERIES = 8;
+const MAX_ERROR_CHARS = 400;
+
+/**
+ * Every search in a sweep usually fails for the same reason (one bad API
+ * key), so reporting each verbatim repeats one enormous provider payload
+ * six times over. Collapse identical causes, and keep the result short
+ * enough for a human to read at a glance.
+ */
+function summariseFailures(failures: { query: string; error: string }[]): string {
+  const counts = new Map<string, number>();
+  for (const f of failures) counts.set(f.error, (counts.get(f.error) ?? 0) + 1);
+
+  return [...counts.entries()]
+    .map(([error, count]) => {
+      const flat = error.replace(/\s+/g, " ").trim();
+      const trimmed = flat.length > MAX_ERROR_CHARS ? `${flat.slice(0, MAX_ERROR_CHARS)}…` : flat;
+      return count > 1 ? `${trimmed} (${count} searches)` : trimmed;
+    })
+    .join(" | ");
+}
 
 /**
  * Runs a full sweep of the owner's service area in one go: gets AI-
@@ -238,7 +258,11 @@ export async function runAreaSweep(): Promise<{
     // did. A sweep where 4 of 6 searches died used to report a clean
     // "completed" with the causes buried in agent_events, so a
     // half-broken integration looked like a quiet day with no leads.
-    error: failedQueries.length > 0 ? failedQueries.map((f) => `"${f.query}": ${f.error}`).join(" | ") : undefined,
+    //
+    // Joining every query's error verbatim produced a screen-filling wall
+    // of the SAME message repeated once per search. Identical causes
+    // collapse to one line with a count.
+    error: failedQueries.length > 0 ? summariseFailures(failedQueries) : undefined,
   });
 
   recordAudit({
