@@ -156,6 +156,17 @@ function upsertJob(job: NormalizedFergusJob): string {
   return jobId;
 }
 
+type FetchOutcome<T> = { ok: true; value: T } | { ok: false; error: string };
+
+/** Captures why a per-job fetch failed instead of discarding it. */
+async function attempt<T>(p: Promise<T>): Promise<FetchOutcome<T>> {
+  try {
+    return { ok: true, value: await p };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? String(err) };
+  }
+}
+
 export async function runFergusSync(): Promise<{ taskId: string; jobsSynced: number }> {
   const creds = getIntegrationCredentials<FergusCredentials>("fergus");
   const taskId = createAgentTask({
@@ -189,6 +200,19 @@ export async function runFergusSync(): Promise<{ taskId: string; jobsSynced: num
     const customerCache = new Map<string, any>();
     let synced = 0;
 
+    // Financials used to be fetched with `.catch(() => null)`, so a job's
+    // money silently became null whether the request failed or the payload
+    // shape simply didn't match what this client expects -- and the sync
+    // still reported "Synced 102 jobs" as a clean success. That is exactly
+    // how an owner ends up staring at an empty finance view with nothing
+    // anywhere telling them why. Both outcomes are now counted and
+    // reported.
+    let finOk = 0;
+    let finFailed = 0;
+    let finEmpty = 0;
+    let firstFinError: string | null = null;
+    let observedFinancialKeys: string | null = null;
+
     for (const raw of rawJobs) {
       const normalized = mapFergusJob(raw, companyPrefix);
       updateAgentTask(taskId, {
@@ -198,14 +222,38 @@ export async function runFergusSync(): Promise<{ taskId: string; jobsSynced: num
 
       // financials/phases/paid-amount are separate endpoints in the real
       // API -- a Job object never embeds them (see fergus.ts header).
-      const [financialSummary, phases, paidAmount] = await Promise.all([
-        getJobFinancialSummaryRaw(creds, raw.id).catch(() => null),
-        getJobPhasesRaw(creds, raw.id).catch(() => []),
-        getJobPaidAmount(creds, raw.id).catch(() => null),
+      const [finRes, phaseRes, paidRes] = await Promise.all([
+        attempt(getJobFinancialSummaryRaw(creds, raw.id)),
+        attempt(getJobPhasesRaw(creds, raw.id)),
+        attempt(getJobPaidAmount(creds, raw.id)),
       ]);
-      applyFinancialSummary(normalized, financialSummary);
-      normalized.financials.paidAmount = paidAmount;
-      normalized.phases = phases.map(mapFergusPhase);
+
+      if (finRes.ok) {
+        applyFinancialSummary(normalized, finRes.value);
+        const got =
+          normalized.financials.quotedAmount !== null ||
+          normalized.financials.actualCost !== null ||
+          normalized.financials.invoicedAmount !== null;
+        if (got) {
+          finOk++;
+        } else {
+          finEmpty++;
+          // Record the field names Fergus actually returned (names only,
+          // never the figures) the first time nothing maps -- without this
+          // a shape mismatch is indistinguishable from a job that
+          // genuinely has no money against it yet.
+          if (observedFinancialKeys === null && finRes.value && typeof finRes.value === "object") {
+            observedFinancialKeys = Object.keys(finRes.value).join(", ") || "(empty object)";
+          }
+        }
+      } else {
+        finFailed++;
+        if (!firstFinError) firstFinError = finRes.error;
+      }
+
+      normalized.financials.paidAmount = paidRes.ok ? paidRes.value : null;
+      if (!paidRes.ok && !firstFinError) firstFinError = paidRes.error;
+      normalized.phases = (phaseRes.ok ? phaseRes.value : []).map(mapFergusPhase);
 
       if (normalized.customer) {
         const custId = normalized.customer.fergusCustomerId;
@@ -220,18 +268,47 @@ export async function runFergusSync(): Promise<{ taskId: string; jobsSynced: num
       synced++;
     }
 
-    updateAgentTask(taskId, { status: "completed", progress: 100, message: `Synced ${synced} jobs` });
-    logAgentEvent({ taskId, agent: "operations_ai", eventType: "fergus_sync_completed", data: { synced } });
+    // Jobs arriving without their money is a half-broken sync, not a
+    // success -- say so plainly rather than reporting a clean tick over an
+    // empty finance view.
+    const financialsMissing = finFailed + finEmpty;
+    let financialsNote: string | null = null;
+    if (synced > 0 && finOk === 0 && financialsMissing > 0) {
+      financialsNote =
+        `No financial figures came back for any of the ${synced} jobs. ` +
+        (finFailed > 0
+          ? `${finFailed} request(s) to Fergus failed -- first error: ${firstFinError}`
+          : `Fergus answered, but none of the expected amounts were present. Fields it actually returned: ${observedFinancialKeys ?? "(none)"}`);
+    } else if (financialsMissing > 0) {
+      financialsNote = `${finOk} job(s) have financials; ${financialsMissing} do not` + (firstFinError ? ` (first error: ${firstFinError})` : "");
+    }
+
+    updateAgentTask(taskId, {
+      status: "completed",
+      progress: 100,
+      message: `Synced ${synced} jobs` + (financialsNote ? " -- but no financials" : ""),
+      error: financialsNote ?? undefined,
+    });
+    logAgentEvent({
+      taskId,
+      agent: "operations_ai",
+      eventType: "fergus_sync_completed",
+      data: { synced, financialsOk: finOk, financialsFailed: finFailed, financialsEmpty: finEmpty, observedFinancialKeys },
+    });
     db.prepare(
-      `UPDATE integration_syncs SET status = 'success', records_synced = ?, finished_at = ? WHERE id = ?`
-    ).run(synced, nowIso(), syncId);
+      `UPDATE integration_syncs SET status = 'success', records_synced = ?, error = ?, finished_at = ? WHERE id = ?`
+    ).run(synced, financialsNote, nowIso(), syncId);
     recordIntegrationSuccess("fergus");
-    recordAudit({ actor: "operations_ai", action: "fergus_sync_completed", details: { synced } });
+    recordAudit({
+      actor: "operations_ai",
+      action: "fergus_sync_completed",
+      details: { synced, financialsOk: finOk, financialsFailed: finFailed, financialsEmpty: finEmpty },
+    });
     createNotification({
-      type: "fergus_sync_completed",
-      severity: "info",
-      title: "Fergus sync completed",
-      message: `${synced} job${synced === 1 ? "" : "s"} synced.`,
+      type: financialsNote && finOk === 0 ? "fergus_financials_missing" : "fergus_sync_completed",
+      severity: financialsNote && finOk === 0 ? "warning" : "info",
+      title: financialsNote && finOk === 0 ? "Fergus synced, but with no financials" : "Fergus sync completed",
+      message: financialsNote ?? `${synced} job${synced === 1 ? "" : "s"} synced.`,
     });
     return { taskId, jobsSynced: synced };
   } catch (err: any) {
