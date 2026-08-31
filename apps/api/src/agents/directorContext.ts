@@ -47,6 +47,35 @@ export function buildDirectorContext() {
   // pretend it knows.
   const cashflowForecast = computeCashflowForecast();
 
+  // Scattered nulls inside the data are easy for a model to skate past,
+  // and the silence gets filled with generic business advice ("consider
+  // upgrading your vehicles") that has nothing to do with this business.
+  // Stating the gaps outright, in plain terms, gives the Director
+  // something concrete to say instead of inventing filler.
+  const totalJobs = db.prepare("SELECT COUNT(*) as c FROM jobs").get() as { c: number };
+  const jobsWithFinancials = db
+    .prepare(
+      `SELECT COUNT(*) as c FROM job_financials
+       WHERE quoted_amount IS NOT NULL OR actual_cost IS NOT NULL OR invoiced_amount IS NOT NULL`
+    )
+    .get() as { c: number };
+  const invoiceCount = db.prepare("SELECT COUNT(*) as c FROM invoices").get() as { c: number };
+
+  const dataGaps: string[] = [];
+  if (totalJobs.c > 0 && jobsWithFinancials.c === 0) {
+    dataGaps.push(
+      `NONE of the ${totalJobs.c} jobs have any financial figures (quoted/cost/invoiced). You cannot say anything ` +
+        `about job profitability, margins, or which work is worth doing. The Fergus sync is not returning money data.`
+    );
+  } else if (totalJobs.c > 0 && jobsWithFinancials.c < totalJobs.c) {
+    dataGaps.push(`Only ${jobsWithFinancials.c} of ${totalJobs.c} jobs have financial figures; the rest are unknown.`);
+  }
+  if (invoiceCount.c === 0) dataGaps.push("There are no invoices at all, so receivables and debtors are unknown.");
+  if (cashflowForecast?.currentCash === null || cashflowForecast?.currentCash === undefined) {
+    dataGaps.push("Current cash position is unknown -- Xero's bank balance has not been read.");
+  }
+  if (businessMemory.length === 0) dataGaps.push("Nothing is recorded about what this business does or where it works.");
+
   return {
     activeJobs: activeJobs.c,
     openQuotes: openQuotesCount.c,
@@ -56,6 +85,7 @@ export function buildDirectorContext() {
     recentNotifications,
     jobs: jobsSummary,
     cashflowForecast,
+    dataGaps,
   };
 }
 
