@@ -44,6 +44,29 @@ export function buildDirectorContext() {
     )
     .all();
 
+  // Enquiries -- work in from Fergus that nobody has priced yet. Asked to
+  // "fetch enquiries from Fergus", the Director said it couldn't and told
+  // the owner to go do it themselves, when these rows were already synced;
+  // they simply weren't distinguished from any other job.
+  const enquiries = db
+    .prepare(
+      `SELECT j.job_number, j.title, j.status, j.site_address, c.name as customer_name, j.updated_at
+       FROM jobs j LEFT JOIN customers c ON c.id = j.customer_id
+       WHERE (j.status IS NULL OR j.status NOT IN ('Completed', 'Inactive', 'completed', 'cancelled'))
+         AND NOT EXISTS (SELECT 1 FROM quotes q WHERE q.job_id = j.id)
+         AND NOT EXISTS (SELECT 1 FROM job_financials f WHERE f.job_id = j.id AND f.quoted_amount IS NOT NULL)
+       ORDER BY j.updated_at DESC LIMIT 20`
+    )
+    .all();
+  const enquiryCount = db
+    .prepare(
+      `SELECT COUNT(*) as c FROM jobs j
+       WHERE (j.status IS NULL OR j.status NOT IN ('Completed', 'Inactive', 'completed', 'cancelled'))
+         AND NOT EXISTS (SELECT 1 FROM quotes q WHERE q.job_id = j.id)
+         AND NOT EXISTS (SELECT 1 FROM job_financials f WHERE f.job_id = j.id AND f.quoted_amount IS NOT NULL)`
+    )
+    .get() as { c: number };
+
   // Leads were absent entirely, so "give me a list of the leads you found"
   // got "I can't provide that" while the rows sat in the database.
   const leads = db
@@ -101,6 +124,8 @@ export function buildDirectorContext() {
     businessMemory,
     recentNotifications,
     jobs: jobsSummary,
+    enquiries,
+    enquiryCount: enquiryCount.c,
     leads,
     leadCounts,
     cashflowForecast,

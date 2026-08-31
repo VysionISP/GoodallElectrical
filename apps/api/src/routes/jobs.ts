@@ -31,6 +31,35 @@ router.get("/", (_req, res) => {
   });
 });
 
+/**
+ * Enquiries: work that has come in from Fergus and still needs pricing.
+ *
+ * Defined by what is true in the data -- an open job with no quote against
+ * it and no quoted amount -- rather than by matching Fergus status strings.
+ * The exact status wording varies ("To Price", "Pending", "Quoting"), and
+ * guessing those strings is how features here have broken before; a job
+ * nobody has priced is unambiguous whatever it is labelled.
+ *
+ * Registered before "/:id" because Express matches in order and "/:id"
+ * would otherwise swallow "/enquiries" as a job id.
+ */
+router.get("/enquiries", (_req, res) => {
+  const db = getDb();
+  const enquiries = db
+    .prepare(
+      `SELECT j.id, j.job_number, j.title, j.description, j.status, j.site_address, j.created_at, j.updated_at,
+              c.name as customer_name, c.email as customer_email
+       FROM jobs j
+       LEFT JOIN customers c ON c.id = j.customer_id
+       WHERE (j.status IS NULL OR j.status NOT IN ('Completed', 'Inactive', 'completed', 'cancelled'))
+         AND NOT EXISTS (SELECT 1 FROM quotes q WHERE q.job_id = j.id)
+         AND NOT EXISTS (SELECT 1 FROM job_financials f WHERE f.job_id = j.id AND f.quoted_amount IS NOT NULL)
+       ORDER BY j.updated_at DESC`
+    )
+    .all();
+  res.json({ enquiries });
+});
+
 router.get("/:id", (req, res) => {
   const db = getDb();
   const job = db

@@ -128,6 +128,25 @@ export function runDoctor() {
     console.log(`  ${label.padEnd(24)} ${n < 0 ? "TABLE MISSING" : n}`);
   }
 
+  heading("Job statuses actually present (from Fergus)");
+  try {
+    const statuses = getDb()
+      .prepare("SELECT COALESCE(status, '(none)') as s, COUNT(*) as c FROM jobs GROUP BY s ORDER BY c DESC")
+      .all() as { s: string; c: number }[];
+    if (statuses.length === 0) console.log("  (no jobs synced)");
+    for (const row of statuses) console.log(`  ${String(row.s).padEnd(28)} ${row.c}`);
+    const unpriced = count(
+      `SELECT COUNT(*) as c FROM jobs j
+       WHERE (j.status IS NULL OR j.status NOT IN ('Completed','Inactive','completed','cancelled'))
+       AND NOT EXISTS (SELECT 1 FROM quotes q WHERE q.job_id = j.id)
+       AND NOT EXISTS (SELECT 1 FROM job_financials f WHERE f.job_id = j.id AND f.quoted_amount IS NOT NULL)`
+    );
+    console.log(`\n  Open jobs with no quote and no quoted amount: ${unpriced}`);
+    console.log("  (these are the enquiries -- work that has come in and still needs pricing)");
+  } catch (err: any) {
+    console.log(`  could not read job statuses: ${err?.message ?? err}`);
+  }
+
   heading("Failed background work (most recent 10)");
   try {
     const failed = getDb()
