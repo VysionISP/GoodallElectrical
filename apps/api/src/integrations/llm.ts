@@ -98,6 +98,19 @@ export async function chatJson(
   } catch (err: any) {
     if (chat.provider === "openai") throw err;
 
+    // A missing/misspelled model slug is the most common way an OpenRouter
+    // setup fails, and retrying in json_object mode would just 404 again --
+    // twice the latency to reach the same dead end, with the real cause
+    // buried. Fail fast and say exactly what to change.
+    const msg = String(err?.message ?? "");
+    if (err?.status === 404 || (/model/i.test(msg) && /not.*(found|exist)/i.test(msg))) {
+      throw new Error(
+        `OpenRouter rejected the model "${chat.model}". Open Integrations, hit "Test connection" on the ` +
+          `OpenRouter card -- it lists the exact Hermes model slugs your key can use -- then paste one into the model field. ` +
+          `(original error: ${err?.message ?? err})`
+      );
+    }
+
     const completion = await chat.client.chat.completions.create({
       model: chat.model,
       response_format: { type: "json_object" },

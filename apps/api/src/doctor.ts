@@ -8,7 +8,7 @@ import path from "node:path";
 import { getDb } from "./db/connection.js";
 import { runMigrations } from "./db/migrate.js";
 import { listIntegrations } from "./integrations/store.js";
-import { getActiveAiProvider } from "./integrations/llm.js";
+import { getActiveAiProvider, getActiveChatClient } from "./integrations/llm.js";
 
 /**
  * `npm run doctor` -- prints what this install ACTUALLY has in it, so a
@@ -78,6 +78,17 @@ export function runDoctor() {
     console.log(`Could not read active AI provider: ${err?.message ?? err}`);
   }
   console.log(`Active AI provider   : ${activeProvider}`);
+  // The exact model every agent will call. A wrong OpenRouter slug 404s
+  // every AI call, so it belongs in the diagnostic rather than being
+  // something you have to go read out of a settings screen.
+  try {
+    const chat = getActiveChatClient();
+    console.log(
+      `Model agents will use: ${chat ? chat.model : `(none -- ${activeProvider} has no API key saved, so all AI features are off)`}`
+    );
+  } catch (err: any) {
+    console.log(`Model agents will use: could not resolve -- ${err?.message ?? err}`);
+  }
   try {
     for (const intg of listIntegrations()) {
       const bits = [
