@@ -15,12 +15,31 @@ interface JobDetailResponse {
   openQuestions: any[];
 }
 
+interface LabourForecast {
+  confidence: number;
+  known: { key: string; value: string }[];
+  missing: string[];
+  expectedHoursLow: number | null;
+  expectedHoursHigh: number | null;
+  reasoning: string | null;
+}
+
 export default function JobDetailPage() {
   const { id } = useParams();
   const [data, setData] = useState<JobDetailResponse | null>(null);
+  const [forecast, setForecast] = useState<LabourForecast | null>(null);
+  const [forecastError, setForecastError] = useState<string | null>(null);
 
   useEffect(() => {
     if (id) api.get<JobDetailResponse>(`/jobs/${id}`).then(setData);
+  }, [id]);
+
+  useEffect(() => {
+    if (!id) return;
+    api
+      .get<LabourForecast>(`/jobs/${id}/labour-forecast`)
+      .then(setForecast)
+      .catch((err) => setForecastError(err.message));
   }, [id]);
 
   if (!data) return <div className="card">Loading…</div>;
@@ -57,6 +76,32 @@ export default function JobDetailPage() {
         <FinCard label="Paid" value={financials?.paid_amount} provenance={financials?.provenance?.paidAmount} />
         <FinCard label="Outstanding" value={financials?.outstanding_amount} provenance={financials?.provenance?.outstandingAmount} />
         <FinCard label="Forecast margin" value={financials?.forecast_margin} isPercent />
+      </div>
+
+      <h3 className="section-heading">Labour forecast</h3>
+      <div className="card" style={{ marginBottom: 20 }}>
+        {forecastError && <div className="field-error">{forecastError}</div>}
+        {forecast && (
+          <>
+            <div className="hq-stat-label">Expected labour</div>
+            <div className="hq-stat-value" style={{ fontSize: 22 }}>
+              {forecast.expectedHoursLow !== null && forecast.expectedHoursHigh !== null
+                ? `${forecast.expectedHoursLow}–${forecast.expectedHoursHigh} hours`
+                : "Not available (OpenAI not configured)"}
+            </div>
+            <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 10 }}>
+              <span className={`pill ${forecast.confidence >= 70 ? "pill-ok" : forecast.confidence >= 40 ? "pill-warn" : "pill-danger"}`}>
+                {forecast.confidence}% confidence
+              </span>
+              {forecast.missing.length > 0 && (
+                <span className="provenance-tag" style={{ margin: 0 }}>
+                  Missing: {forecast.missing.map((m) => m.replace(/_/g, " ")).join(", ")}
+                </span>
+              )}
+            </div>
+            {forecast.reasoning && <div style={{ marginTop: 10, fontSize: 13, color: "var(--text-dim)" }}>{forecast.reasoning}</div>}
+          </>
+        )}
       </div>
 
       <div className="job-detail-grid">

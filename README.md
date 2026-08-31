@@ -185,6 +185,77 @@ ever running unless the owner sent a chat message first.
     overnight review needs this hosted somewhere that stays up, which is future
     work, not something to pretend already exists.
 
+## Financial planning (Finance AI, Estimator AI, Debtor AI)
+
+Previously entirely missing -- this was the honest answer when asked "is this
+platform anywhere near done": no cashflow model, no P&L, no labour confidence
+engine, no quote PDFs, no debtor workflow existed. All of the below is built and
+verified with real computed numbers (hand-checked math, actual PDF text
+extraction, live 403→approve→200 firewall runs), not just "it compiles":
+
+- **Real bug found and fixed while building this**: `mapXeroInvoice` was writing
+  Xero's raw status strings (`AUTHORISED`, `PAID`, ...) straight into
+  `invoices.status`, which has a strict lowercase CHECK constraint
+  (`draft`/`pending_approval`/.../`overdue`/`void`). **Every real Xero invoice
+  sync would have failed outright** the first time it hit a non-matching status.
+  `mapXeroStatusToInvoiceStatus()` in `xero.ts` now translates Xero's status into
+  ours, deriving `overdue`/`part_paid` from real due dates and amounts rather
+  than trusting a status Xero doesn't actually provide. Covered by a small
+  standalone test (6 cases, all passing) since this is exactly the kind of
+  silent breakage that shouldn't ship unverified twice.
+- **Xero sync now also pulls bills (payables) and bank transactions**
+  (`apps/api/src/integrations/xero.ts`, `xeroSync.ts`), plus a best-effort read
+  of the `Reports/BankSummary` current cash position, cached on the integration
+  row with a timestamp. Like the rest of the Xero integration, `BankSummary`'s
+  exact response shape is unverified against a live tenant -- it fails closed
+  (returns `null`, never a guessed number) rather than mis-parsing into a wrong
+  cash figure.
+- **Cashflow forecast** (`apps/api/src/agents/financeAI.ts`,
+  `GET /api/finance/forecast`, `/finance` page): current cash + expected
+  receipts (real outstanding invoices) − payables (real bills) − recurring costs
+  across 7/14/30/60/90-day windows, matching section 20 of the brief. Recurring
+  costs (wages/super/fixed/materials) are **structured owner input**
+  (`recurring_costs` table, `/finance` page), not LLM-parsed free text --
+  financial deductions are numbers a human typed in, not a guess. Verified by
+  hand-computing every window against seeded data; all five matched exactly,
+  including the fortnightly/weekly-to-daily rounding.
+- **Scenario modeling** ("can we afford another electrician") is the Director
+  chat, not a separate feature -- `buildDirectorContext()` now includes the real
+  forecast, and the system prompt instructs it to say plainly when
+  `currentCash` is null (Xero not read yet) or `hasRecurringCosts` is false
+  (forecast is incomplete) instead of presenting a partial picture as whole.
+- **Labour-forecast confidence engine** (`apps/api/src/agents/estimatorAI.ts`,
+  `GET /api/jobs/:id/labour-forecast`, shown on the job detail page) -- section 8
+  of the brief. Confidence is a mechanical `knownCount/7` over the same
+  operational facts Operations AI asks about (crew size, night work, shutdown,
+  etc), not an LLM's self-rated confidence. The hour range itself needs OpenAI;
+  without it, `expectedHoursLow/High` are `null` and the UI says so, never a
+  fabricated number.
+- **Quote PDFs** (`apps/api/src/lib/quotePdf.ts`, `GET /api/quotes/:id/pdf?variant=`)
+  -- section 17. Verified by actually extracting text from both generated PDFs:
+  the `customer` variant (the default) contains zero occurrences of cost,
+  margin, or profit; the `owner` variant has the full internal P&L and approval
+  trail. This isn't a flag that could leak the wrong data by mistake -- the
+  customer code path physically never writes those fields.
+- **Debtor AI** (`apps/api/src/agents/debtorAI.ts`, `apps/api/src/routes/debtors.ts`,
+  `/debtors` page) drafts payment reminders for real overdue invoices and gates
+  sending through the identical approval-firewall pattern as quotes/invoices --
+  verified live: 403 before approval, approved via `/api/approvals/:id/decide`,
+  then an honest `400 SMTP_NOT_CONFIGURED` rather than a fabricated "sent"
+  status, since no SMTP was configured in this environment. Debtor reminders use
+  `entity_type: 'other'` in the `approvals` table rather than adding a new enum
+  value -- SQLite can't alter a CHECK constraint without dropping and recreating
+  the table, and that was tested directly here and found to cascade-delete every
+  row in `approval_events` (the audit trail) via its `ON DELETE CASCADE` foreign
+  key. Not worth that risk for a cosmetic label.
+
+**Known minor inconsistency, not yet reconciled**: the job detail page's
+"Missing information" panel (only facts with an explicit `unknown`/
+`needs_owner_input` job_context row) and the labour forecast's "Missing" list
+(any of the 7 driving facts with no known/inferred row at all, including facts
+that were simply never asked about) use slightly different definitions of
+"missing". Both are individually honest, just not unified yet.
+
 ## Non-negotiables this build respects
 
 - No quote or invoice can be sent without an `approved` row in `approvals` —
@@ -197,14 +268,17 @@ ever running unless the owner sent a chat message first.
 ## Next steps for whoever continues this
 
 1. Get real Fergus + Xero credentials into a dev environment, run a sync, and fix
-   `mapFergusJob` / `mapXeroInvoice` against the real payloads.
-2. Build out Lead Hunter / Research AI / Sales AI (Google Places search, outreach
-   drafting into `sales_outreach`, approval-gated sending).
-3. Build the labour-forecast confidence engine described in section 8 of the
-   original brief (`job_context` already has a `confidence` column to support it).
-4. Add owner authentication (currently every actor is implicitly "owner" — there's
+   `mapFergusJob` / `mapXeroInvoice` / `getCashPosition`'s BankSummary parsing
+   against the real payloads -- everything downstream (forecast, job financials)
+   is only as correct as these mappings.
+2. Add owner authentication (currently every actor is implicitly "owner" — there's
    no login yet, which is fine for a single-user local dev instance but not for
    anything multi-user or internet-facing).
-5. Swap SQLite for Postgres + a real task queue (Redis/BullMQ) when moving past a
+3. Swap SQLite for Postgres + a real task queue (Redis/BullMQ) when moving past a
    single-process deployment — the migration SQL and repository-style access
    functions were written to make that swap mechanical rather than a rewrite.
+   This is also what "the Director runs 24/7" actually needs -- the background
+   review only runs while this one Node process is alive.
+4. Reconcile the two "missing information" definitions noted above.
+5. P&L reporting proper (currently only a per-window cashflow forecast exists,
+   not a Xero-sourced profit & loss statement).

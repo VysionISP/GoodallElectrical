@@ -102,6 +102,21 @@ router.post("/:id/decide", (req, res) => {
       now,
       approval.entity_id
     );
+  } else if (parsed.data.decision === "approved") {
+    // Debtor reminders use entity_type 'other' (see migration 010 for why),
+    // so match on whether a debtor_reminders row with this id exists
+    // rather than the generic entity_type label.
+    const reminder = db.prepare("SELECT id FROM debtor_reminders WHERE id = ?").get(approval.entity_id) as
+      | { id: string }
+      | undefined;
+    if (reminder) {
+      db.prepare(`UPDATE debtor_reminders SET status = 'approved', approved_by = ?, approved_at = ?, updated_at = ? WHERE id = ?`).run(
+        parsed.data.decidedBy,
+        now,
+        now,
+        reminder.id
+      );
+    }
   }
 
   recordAudit({

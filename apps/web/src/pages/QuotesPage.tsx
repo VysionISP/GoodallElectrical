@@ -75,7 +75,7 @@ export default function QuotesPage() {
                   <td>{money(q.total)}</td>
                   <td>{money(q.forecast_gross_profit)}</td>
                   <td>{percent(q.forecast_margin)}</td>
-                  <td>
+                  <td style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                     {q.status === "draft" && (
                       <button className="btn btn-secondary" disabled={busy === q.id} onClick={() => submitForApproval(q.id)}>
                         Submit for approval
@@ -86,6 +86,12 @@ export default function QuotesPage() {
                         Send
                       </button>
                     )}
+                    <a className="btn btn-secondary" href={`/api/quotes/${q.id}/pdf?variant=customer`} target="_blank" rel="noreferrer">
+                      PDF (customer)
+                    </a>
+                    <a className="btn btn-secondary" href={`/api/quotes/${q.id}/pdf?variant=owner`} target="_blank" rel="noreferrer">
+                      PDF (owner)
+                    </a>
                   </td>
                 </tr>
               ))}

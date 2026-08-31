@@ -15,6 +15,8 @@ import auditLogRouter from "./routes/auditLog.js";
 import directorRouter from "./routes/director.js";
 import leadsRouter from "./routes/leads.js";
 import businessMemoryRouter from "./routes/businessMemory.js";
+import financeRouter from "./routes/finance.js";
+import debtorsRouter from "./routes/debtors.js";
 import { runBackgroundReview } from "./agents/backgroundReview.js";
 
 // Idempotent -- safe on an empty DB, a partially migrated DB, or an
@@ -79,6 +81,8 @@ app.use("/api/audit-log", auditLogRouter);
 app.use("/api/director", directorRouter);
 app.use("/api/leads", leadsRouter);
 app.use("/api/business-memory", businessMemoryRouter);
+app.use("/api/finance", financeRouter);
+app.use("/api/debtors", debtorsRouter);
 
 app.use((req, res) => {
   res.status(404).json({ error: "NOT_FOUND", path: req.path });

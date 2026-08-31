@@ -1,4 +1,5 @@
 import { getDb } from "../db/connection.js";
+import { computeCashflowForecast } from "./financeAI.js";
 
 /**
  * Builds the structured business context fed to the Director's system
@@ -38,6 +39,14 @@ export function buildDirectorContext() {
     )
     .all();
 
+  // Real cashflow data so the Director can actually answer scenario
+  // questions ("can we afford another electrician?") with numbers instead
+  // of guessing -- section 21 of the brief. If Xero isn't connected or
+  // cash position couldn't be read, currentCash is null and the Director
+  // is instructed (see director.ts system prompt) to say so rather than
+  // pretend it knows.
+  const cashflowForecast = computeCashflowForecast();
+
   return {
     activeJobs: activeJobs.c,
     openQuotes: openQuotesCount.c,
@@ -46,6 +55,7 @@ export function buildDirectorContext() {
     businessMemory,
     recentNotifications,
     jobs: jobsSummary,
+    cashflowForecast,
   };
 }
 

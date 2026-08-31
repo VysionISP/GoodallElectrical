@@ -5,6 +5,7 @@ import { newId, nowIso } from "../lib/ids.js";
 import { recordAudit } from "../lib/audit.js";
 import { createNotification } from "../lib/notifications.js";
 import { requireApproval } from "../lib/approvalFirewall.js";
+import { renderQuotePdf } from "../lib/quotePdf.js";
 
 const router = Router();
 
@@ -20,6 +21,33 @@ router.get("/:id", (req, res) => {
   if (!quote) return res.status(404).json({ error: "NOT_FOUND" });
   const items = db.prepare("SELECT * FROM quote_items WHERE quote_id = ? ORDER BY sort_order").all(req.params.id);
   res.json({ quote, items });
+});
+
+/**
+ * variant defaults to "customer" (the safe default -- no cost/margin
+ * data) and only produces the owner variant when explicitly asked for.
+ */
+router.get("/:id/pdf", (req, res) => {
+  const variant = req.query.variant === "owner" ? "owner" : "customer";
+  const db = getDb();
+  const quote = db.prepare("SELECT * FROM quotes WHERE id = ?").get(req.params.id) as any;
+  if (!quote) return res.status(404).json({ error: "NOT_FOUND" });
+  const items = db.prepare("SELECT * FROM quote_items WHERE quote_id = ? ORDER BY sort_order").all(req.params.id) as any[];
+  const customer = quote.customer_id
+    ? (db.prepare("SELECT name FROM customers WHERE id = ?").get(quote.customer_id) as { name: string } | undefined)
+    : undefined;
+  const job = quote.job_id
+    ? (db.prepare("SELECT title FROM jobs WHERE id = ?").get(quote.job_id) as { title: string } | undefined)
+    : undefined;
+
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `inline; filename="quote-${quote.quote_number ?? quote.id}-${variant}.pdf"`);
+  const stream = renderQuotePdf(
+    { quote, items, customerName: customer?.name ?? null, jobTitle: job?.title ?? null },
+    variant
+  );
+  stream.pipe(res);
+  recordAudit({ actor: "owner", action: "quote_pdf_generated", entityType: "quote", entityId: quote.id, details: { variant } });
 });
 
 const itemSchema = z.object({

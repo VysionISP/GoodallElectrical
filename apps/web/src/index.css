@@ -90,6 +90,9 @@ a {
   padding: 8px 14px;
   font-weight: 600;
   cursor: pointer;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
 }
 .btn:disabled {
   opacity: 0.5;

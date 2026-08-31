@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { getDb } from "../db/connection.js";
+import { computeLabourForecast } from "../agents/estimatorAI.js";
 
 const router = Router();
 
@@ -65,6 +66,17 @@ router.get("/:id", (req, res) => {
     invoices,
     openQuestions,
   });
+});
+
+/** Section 8 of the brief: "Expected labour: 31 hours, Confidence: 42%, Missing: ...". */
+router.get("/:id/labour-forecast", async (req, res) => {
+  try {
+    const forecast = await computeLabourForecast(req.params.id);
+    res.json(forecast);
+  } catch (err: any) {
+    const status = err?.code === "NOT_FOUND" ? 404 : 502;
+    res.status(status).json({ error: err?.code ?? "FORECAST_FAILED", message: err?.message ?? String(err) });
+  }
 });
 
 export default router;

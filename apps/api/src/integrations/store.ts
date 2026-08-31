@@ -121,6 +121,31 @@ export function setIntegrationCredentials(
   }
 }
 
+/** Merges `patch` into a provider's non-secret config JSON -- e.g. caching the last-synced cash position alongside its timestamp. */
+export function setIntegrationConfig(provider: Provider, patch: Record<string, unknown>): void {
+  const db = getDb();
+  const existing = db.prepare("SELECT id, config FROM integrations WHERE provider = ?").get(provider) as
+    | { id: string; config: string | null }
+    | undefined;
+  const now = nowIso();
+  if (existing) {
+    const merged = { ...(existing.config ? JSON.parse(existing.config) : {}), ...patch };
+    db.prepare(`UPDATE integrations SET config = ?, updated_at = ? WHERE id = ?`).run(JSON.stringify(merged), now, existing.id);
+  } else {
+    db.prepare(
+      `INSERT INTO integrations (id, provider, status, config, created_at, updated_at) VALUES (?, ?, 'not_configured', ?, ?, ?)`
+    ).run(newId("intg"), provider, JSON.stringify(patch), now, now);
+  }
+}
+
+export function getIntegrationConfig(provider: Provider): Record<string, unknown> | null {
+  const db = getDb();
+  const row = db.prepare("SELECT config FROM integrations WHERE provider = ?").get(provider) as
+    | { config: string | null }
+    | undefined;
+  return row?.config ? JSON.parse(row.config) : null;
+}
+
 export function disconnectIntegration(provider: Provider): void {
   const db = getDb();
   db.prepare(
