@@ -12,6 +12,12 @@ const MAX_JOBS_PER_CYCLE = 5;
 // let them catch up before piling on more.
 const MAX_OPEN_JOB_QUESTIONS = 6;
 
+/** One thing the background pass found this cycle that's worth mentioning in the proactive briefing. */
+interface RaisedItem {
+  label: string; // e.g. "ELEC-3256", or "the business" for a general question
+  question: string;
+}
+
 /** Inserts an open question only if an identical open one doesn't already exist -- keeps repeated review cycles from spamming duplicates. */
 function ensureOpenQuestion(agent: AgentName, entityType: string | null, entityId: string | null, question: string): boolean {
   const db = getDb();
@@ -28,20 +34,17 @@ function ensureOpenQuestion(agent: AgentName, entityType: string | null, entityI
 }
 
 /** No OpenAI required -- a straight DB check. This is the fix for "I shouldn't have to go fill out a form": if nothing has told the Director what services the business offers, it asks, unprompted. */
-function checkBusinessProfileGap(): number {
+function checkBusinessProfileGap(): RaisedItem | null {
   const db = getDb();
   const services = db
     .prepare("SELECT COUNT(*) as c FROM business_memory WHERE active = 1 AND category = 'services'")
     .get() as { c: number };
-  if (services.c > 0) return 0;
-  const created = ensureOpenQuestion(
-    "director",
-    null,
-    null,
+  if (services.c > 0) return null;
+  const question =
     "I don't know what services Goodall Electrical offers or what area you want to work in yet. Can you tell me? " +
-      "It's blocking lead search and how I judge whether a job or lead is worth pursuing."
-  );
-  return created ? 1 : 0;
+    "It's blocking lead search and how I judge whether a job or lead is worth pursuing.";
+  const created = ensureOpenQuestion("director", null, null, question);
+  return created ? { label: "the business", question } : null;
 }
 
 const JOB_REVIEW_SCHEMA = {
@@ -67,10 +70,10 @@ const JOB_REVIEW_SCHEMA = {
 } as const;
 
 /** Consolidates everything missing about a job into ONE question, the way a person would actually ask about it -- not one card per fact. */
-async function reviewJob(taskId: string, job: any): Promise<number> {
+async function reviewJob(taskId: string, job: any): Promise<RaisedItem | null> {
   const db = getDb();
   const client = getOpenAiClient();
-  if (!client) return 0; // no LLM available -- leave the job unreviewed rather than asking nothing intelligently
+  if (!client) return null; // no LLM available -- leave the job unreviewed rather than asking nothing intelligently
 
   const completion = await client.chat.completions.create({
     model: MODEL,
@@ -102,9 +105,12 @@ async function reviewJob(taskId: string, job: any): Promise<number> {
     needsInput: boolean;
     question: string;
   };
-  let raised = 0;
+  let raised: RaisedItem | null = null;
   if (parsed.needsInput && parsed.question.trim()) {
-    if (ensureOpenQuestion("operations_ai", "job", job.id, parsed.question.trim())) raised = 1;
+    const question = parsed.question.trim();
+    if (ensureOpenQuestion("operations_ai", "job", job.id, question)) {
+      raised = { label: job.job_number ?? job.id, question };
+    }
   }
 
   // Mark reviewed regardless of outcome so this job isn't re-processed
@@ -116,8 +122,97 @@ async function reviewJob(taskId: string, job: any): Promise<number> {
      ON CONFLICT(job_id, key) DO NOTHING`
   ).run(newId("ctx"), job.id, now, now);
 
-  logAgentEvent({ taskId, agent: "operations_ai", eventType: "job_reviewed", data: { jobId: job.id, questionsRaised: raised } });
+  logAgentEvent({ taskId, agent: "operations_ai", eventType: "job_reviewed", data: { jobId: job.id, questionsRaised: raised ? 1 : 0 } });
   return raised;
+}
+
+const BRIEFING_SCHEMA = {
+  name: "director_briefing",
+  strict: true,
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      message: {
+        type: "string",
+        description:
+          "One natural, first-person message from the Director to the owner summarizing what this background " +
+          "review pass found, in the voice of a competent operations manager checking in -- not a bulleted report. " +
+          "Mention the real numbers given (active jobs, overdue receivables) briefly for context, then walk through " +
+          "the specific things that need the owner's input in plain sentences, the way a person would bring it up " +
+          "in conversation. Do not invent anything not given to you.",
+      },
+    },
+    required: ["message"],
+  },
+} as const;
+
+/**
+ * Turns what this cycle actually found into ONE natural chat message from
+ * the Director, posted into director_messages unprompted -- so what the
+ * owner sees when they open the Chat tab (the default tab) is the Director
+ * having already spoken, the way a real operations manager would flag
+ * things on their own rather than leaving a pile of silent form cards for
+ * the owner to go decode. Only called when something genuinely new was
+ * found this cycle (see runBackgroundReview) -- never fires on a quiet
+ * cycle just to make noise.
+ */
+async function postProactiveBriefing(raised: RaisedItem[], jobsReviewed: number): Promise<void> {
+  const db = getDb();
+  const activeJobs = db
+    .prepare("SELECT COUNT(*) as c FROM jobs WHERE status IS NULL OR status NOT IN ('completed', 'cancelled', 'Completed', 'Inactive')")
+    .get() as { c: number };
+  const overdueTotal = db
+    .prepare("SELECT COALESCE(SUM(amount_due), 0) as total FROM invoices WHERE status = 'overdue'")
+    .get() as { total: number };
+
+  const client = getOpenAiClient();
+  let message: string;
+
+  if (!client) {
+    // No LLM available -- still speak up, just without the natural-language polish.
+    const lines = raised.map((r) => `- ${r.label}: ${r.question}`);
+    message =
+      `Background review: ${activeJobs.c} active job(s), ${jobsReviewed} reviewed this pass. ` +
+      `${raised.length} thing${raised.length === 1 ? "" : "s"} need your input:\n${lines.join("\n")}`;
+  } else {
+    try {
+      const completion = await client.chat.completions.create({
+        model: MODEL,
+        response_format: { type: "json_schema", json_schema: BRIEFING_SCHEMA },
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are the AI Director for Goodall Electrical, an electrical contracting company. You just finished " +
+              "an unprompted background review pass and are about to speak to the owner first, the way a real " +
+              "operations manager would walk in and say what they found -- not a report, a conversation opener.",
+          },
+          {
+            role: "user",
+            content: JSON.stringify({
+              activeJobs: activeJobs.c,
+              overdueReceivables: overdueTotal.total,
+              jobsReviewedThisPass: jobsReviewed,
+              newQuestions: raised.map((r) => ({ about: r.label, question: r.question })),
+            }),
+          },
+        ],
+      });
+      const parsed = JSON.parse(completion.choices[0]?.message?.content ?? "{}") as { message: string };
+      message = parsed.message?.trim() || `I found ${raised.length} thing${raised.length === 1 ? "" : "s"} that need your input after reviewing the business.`;
+    } catch (err: any) {
+      logAgentEvent({ agent: "director", eventType: "briefing_compose_failed", message: err?.message ?? String(err) });
+      const lines = raised.map((r) => `- ${r.label}: ${r.question}`);
+      message = `Background review found ${raised.length} thing${raised.length === 1 ? "" : "s"} that need your input:\n${lines.join("\n")}`;
+    }
+  }
+
+  db.prepare(`INSERT INTO director_messages (id, role, content, created_at) VALUES (?, 'director', ?, ?)`).run(
+    newId("dmsg"),
+    message,
+    nowIso()
+  );
 }
 
 /**
@@ -126,7 +221,9 @@ async function reviewJob(taskId: string, job: any): Promise<number> {
  * chat message. Checks for structural gaps (no business profile) and
  * reviews recently-synced Fergus jobs that have never been looked at,
  * raising real ai_questions rather than requiring the owner to notice
- * something is missing and go looking for a settings page.
+ * something is missing and go looking for a settings page. When it finds
+ * something new, it also speaks up in the chat itself (see
+ * postProactiveBriefing) instead of only leaving silent question cards.
  */
 export async function runBackgroundReview(): Promise<{ taskId: string; questionsRaised: number; jobsReviewed: number }> {
   const taskId = createAgentTask({
@@ -138,9 +235,14 @@ export async function runBackgroundReview(): Promise<{ taskId: string; questions
 
   let questionsRaised = 0;
   let jobsReviewed = 0;
+  const raisedItems: RaisedItem[] = [];
 
   try {
-    questionsRaised += checkBusinessProfileGap();
+    const profileGap = checkBusinessProfileGap();
+    if (profileGap) {
+      questionsRaised++;
+      raisedItems.push(profileGap);
+    }
 
     const db = getDb();
     const openJobQuestions = db
@@ -174,7 +276,11 @@ export async function runBackgroundReview(): Promise<{ taskId: string; questions
         progress: Math.round((jobsReviewed / Math.max(unreviewed.length, 1)) * 100),
       });
       try {
-        questionsRaised += await reviewJob(taskId, job);
+        const jobRaised = await reviewJob(taskId, job);
+        if (jobRaised) {
+          questionsRaised++;
+          raisedItems.push(jobRaised);
+        }
         jobsReviewed++;
       } catch (err: any) {
         logAgentEvent({ taskId, agent: "operations_ai", eventType: "job_review_failed", message: err?.message ?? String(err) });
@@ -188,6 +294,14 @@ export async function runBackgroundReview(): Promise<{ taskId: string; questions
         title: "Director needs information",
         message: `${questionsRaised} new question${questionsRaised === 1 ? "" : "s"} waiting for you after a background review.`,
       });
+      // Speak up in the chat itself, unprompted -- this is what makes the
+      // Director feel like it's actually running the business in the
+      // background rather than just reacting when the owner opens the app.
+      try {
+        await postProactiveBriefing(raisedItems, jobsReviewed);
+      } catch (err: any) {
+        logAgentEvent({ taskId, agent: "director", eventType: "briefing_post_failed", message: err?.message ?? String(err) });
+      }
     }
 
     updateAgentTask(taskId, {

@@ -184,6 +184,22 @@ ever running unless the owner sent a chat message first.
     `npm run dev` on a laptop is not a 24/7 deployment -- genuinely autonomous
     overnight review needs this hosted somewhere that stays up, which is future
     work, not something to pretend already exists.
+- **When a review finds something new, the Director now says so in the chat
+  itself, unprompted** (`postProactiveBriefing()` in `backgroundReview.ts`). This
+  is a direct fix for "it doesn't act like a human" feedback: previously
+  everything the background pass found only surfaced as silent cards under
+  "Needs You", so the Director never actually spoke first -- it just sat there
+  until the owner clicked in and decoded a pile of form fields. Now, when a
+  cycle raises real questions, it composes ONE natural first-person message
+  (via OpenAI, with real numbers -- active job count, overdue receivables --
+  given to it, never invented) and posts it into `director_messages` as if it
+  had walked in and said "here's what I found," and it shows up automatically
+  when the owner opens the default Chat tab. A quiet cycle (nothing new,
+  already-open questions don't count again) posts nothing -- verified with a
+  real seeded SQLite DB: first run posts one briefing message and raises one
+  question, an immediate second run with nothing new raises zero questions and
+  posts zero additional messages. Without an OpenAI key configured it still
+  speaks up with a plainer templated version rather than staying silent.
 
 ## Financial planning (Finance AI, Estimator AI, Debtor AI)
 
