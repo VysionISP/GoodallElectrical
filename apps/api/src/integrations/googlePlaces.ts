@@ -90,6 +90,43 @@ export async function searchTextRaw(
   return data.places ?? [];
 }
 
+/**
+ * Text Search can return administrative/geographic results (the town
+ * itself, a suburb, a postcode) alongside actual businesses -- e.g.
+ * searching "electrical services Sale VIC" can return "Sale, VIC" as a
+ * place in its own right. Those aren't leads. A result counts as a real
+ * business only if it has at least one type outside this purely
+ * geographic/administrative set.
+ */
+const NON_BUSINESS_TYPES = new Set([
+  "locality",
+  "political",
+  "administrative_area_level_1",
+  "administrative_area_level_2",
+  "administrative_area_level_3",
+  "administrative_area_level_4",
+  "administrative_area_level_5",
+  "country",
+  "postal_code",
+  "postal_town",
+  "route",
+  "street_address",
+  "sublocality",
+  "sublocality_level_1",
+  "sublocality_level_2",
+  "neighborhood",
+  "plus_code",
+  "premise",
+  "subpremise",
+  "natural_feature",
+  "colloquial_area",
+]);
+
+export function isLikelyBusiness(place: NormalizedPlace): boolean {
+  if (place.types.length === 0) return false;
+  return place.types.some((t) => !NON_BUSINESS_TYPES.has(t));
+}
+
 export function mapPlace(raw: any): NormalizedPlace {
   return {
     placeId: String(raw.id),

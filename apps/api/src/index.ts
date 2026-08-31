@@ -14,6 +14,7 @@ import notificationsRouter from "./routes/notifications.js";
 import auditLogRouter from "./routes/auditLog.js";
 import directorRouter from "./routes/director.js";
 import leadsRouter from "./routes/leads.js";
+import businessMemoryRouter from "./routes/businessMemory.js";
 
 // Idempotent -- safe on an empty DB, a partially migrated DB, or an
 // up-to-date DB. This is the fix for the historical
@@ -76,6 +77,7 @@ app.use("/api/notifications", notificationsRouter);
 app.use("/api/audit-log", auditLogRouter);
 app.use("/api/director", directorRouter);
 app.use("/api/leads", leadsRouter);
+app.use("/api/business-memory", businessMemoryRouter);
 
 app.use((req, res) => {
   res.status(404).json({ error: "NOT_FOUND", path: req.path });

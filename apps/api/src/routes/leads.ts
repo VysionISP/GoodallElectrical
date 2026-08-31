@@ -5,7 +5,7 @@ import { newId, nowIso } from "../lib/ids.js";
 import { recordAudit } from "../lib/audit.js";
 import { createNotification } from "../lib/notifications.js";
 import { requireApproval } from "../lib/approvalFirewall.js";
-import { runLeadSearch } from "../agents/leadHunter.js";
+import { runLeadSearch, suggestSearchQueries, runAreaSweep } from "../agents/leadHunter.js";
 import { runLeadResearch } from "../agents/researchAI.js";
 import { draftOutreach } from "../agents/salesAI.js";
 import { getIntegrationCredentials } from "../integrations/store.js";
@@ -60,6 +60,26 @@ router.patch("/:id", (req, res) => {
 });
 
 const searchSchema = z.object({ query: z.string().min(1) });
+
+router.post("/suggest-queries", async (_req, res) => {
+  try {
+    const queries = await suggestSearchQueries();
+    res.json({ ok: true, queries });
+  } catch (err: any) {
+    const status = err?.code === "NOT_CONFIGURED" || err?.code === "NO_SERVICES" ? 400 : 502;
+    res.status(status).json({ ok: false, error: err?.code ?? "SUGGEST_FAILED", message: err?.message ?? String(err) });
+  }
+});
+
+router.post("/sweep", async (_req, res) => {
+  try {
+    const result = await runAreaSweep();
+    res.json({ ok: true, ...result });
+  } catch (err: any) {
+    const status = ["NOT_CONFIGURED", "NO_SERVICES", "NO_QUERIES"].includes(err?.code) ? 400 : 502;
+    res.status(status).json({ ok: false, error: err?.code ?? "SWEEP_FAILED", message: err?.message ?? String(err) });
+  }
+});
 
 router.post("/search", async (req, res) => {
   const parsed = searchSchema.safeParse(req.body);

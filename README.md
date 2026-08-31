@@ -132,6 +132,28 @@ contact-email editing, draft/submit/send). Lead Hunter, Research AI and Sales AI
 already had HQ nav-graph positions (Lead Radar room) from the original build, so
 their agent_tasks now animate there for real.
 
+**Business Profile** (`/business-profile`, `apps/api/src/routes/businessMemory.ts`)
+is the owner-facing CRUD UI for `business_memory` — services offered, service
+area, pricing rules, jobs excluded. Research AI already read this table for lead
+scoring; this is what actually lets an owner populate it instead of it staying
+empty forever.
+
+**Automatic area sweep** (`POST /api/leads/sweep`,
+`runAreaSweep` in `leadHunter.ts`): instead of typing search queries one at a
+time, this generates several Google Places queries from the "services" +
+"service_area" Business Profile entries (via the same OpenAI call as
+`suggest-queries`) and runs all of them in one pass, capped at 8 queries per
+sweep since each is a billed request. One query failing doesn't abort the rest —
+failures are collected and reported, not silently dropped. Requires both
+`services` and (ideally) `service_area` entries to exist first; fails fast with a
+clear message otherwise rather than guessing a location.
+
+Also fixed while building this: Google Places Text Search can return the
+locality/suburb/postcode itself as a result alongside real businesses (e.g.
+searching near "Sale VIC" returned "Sale" itself as a "lead"). `isLikelyBusiness()`
+in `googlePlaces.ts` filters out results whose only Places types are
+administrative/geographic (locality, postal_code, route, etc.).
+
 ## Non-negotiables this build respects
 
 - No quote or invoice can be sent without an `approved` row in `approvals` —

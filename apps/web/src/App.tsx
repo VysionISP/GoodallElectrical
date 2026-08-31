@@ -8,6 +8,7 @@ import IntegrationsPage from "./pages/IntegrationsPage.js";
 import QuotesPage from "./pages/QuotesPage.js";
 import LeadsPage from "./pages/LeadsPage.js";
 import LeadDetailPage from "./pages/LeadDetailPage.js";
+import BusinessProfilePage from "./pages/BusinessProfilePage.js";
 import DirectorWidget from "./components/DirectorWidget.js";
 
 export default function App() {
@@ -29,6 +30,7 @@ export default function App() {
           <NavLink to="/quotes">Quotes</NavLink>
           <NavLink to="/leads">Lead Radar</NavLink>
           <NavLink to="/approvals">Approvals</NavLink>
+          <NavLink to="/business-profile">Business Profile</NavLink>
           <NavLink to="/integrations">Integrations</NavLink>
         </nav>
       </header>
@@ -41,6 +43,7 @@ export default function App() {
           <Route path="/leads" element={<LeadsPage />} />
           <Route path="/leads/:id" element={<LeadDetailPage />} />
           <Route path="/approvals" element={<ApprovalsPage />} />
+          <Route path="/business-profile" element={<BusinessProfilePage />} />
           <Route path="/integrations" element={<IntegrationsPage />} />
         </Routes>
       </main>
