@@ -241,6 +241,13 @@ export default function DirectorWidget() {
                       {t.agent} · {t.task_type}
                     </div>
                     <div className="director-list-meta">{t.message ?? t.room ?? ""}</div>
+                    {/* A failed task's reason was recorded but never shown, so
+                        every failure looked identical and undiagnosable. */}
+                    {t.status === "failed" && t.error && (
+                      <div className="director-list-meta" style={{ color: "var(--danger)", wordBreak: "break-word" }}>
+                        {t.error}
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}

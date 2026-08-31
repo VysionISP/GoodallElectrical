@@ -231,8 +231,14 @@ export async function runAreaSweep(): Promise<{
   updateAgentTask(taskId, {
     status: allFailed ? "failed" : "completed",
     progress: 100,
-    message: `${totalFound} found, ${totalCreated} new across ${queries.length} searches`,
-    error: allFailed ? failedQueries.map((f) => f.error).join("; ") : undefined,
+    message:
+      `${totalFound} found, ${totalCreated} new across ${queries.length} searches` +
+      (failedQueries.length > 0 ? ` (${failedQueries.length} search(es) failed)` : ""),
+    // Record the reason whenever anything failed, not only when everything
+    // did. A sweep where 4 of 6 searches died used to report a clean
+    // "completed" with the causes buried in agent_events, so a
+    // half-broken integration looked like a quiet day with no leads.
+    error: failedQueries.length > 0 ? failedQueries.map((f) => `"${f.query}": ${f.error}`).join(" | ") : undefined,
   });
 
   recordAudit({

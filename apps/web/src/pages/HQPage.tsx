@@ -88,16 +88,32 @@ function ActivityBanner({ tasks }: { tasks: AgentTask[] | null }) {
   const lastAt = newest.finished_at ?? newest.updated_at;
   const minutesAgo = lastAt ? Math.round((Date.now() - new Date(lastAt).getTime()) / 60000) : null;
 
+  // Recent failures, with the reason. A red "FAILED" dot on the map with
+  // the cause buried in the database is not a diagnosis -- the error text
+  // is already recorded, it just had nowhere to appear.
+  const failed = tasks.filter((t) => t.status === "failed").slice(0, 3);
+
   return (
-    <div className="card" style={{ marginBottom: 16, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-      <span className={`pill ${running.length > 0 ? "pill-info" : "pill-muted"}`}>
-        {running.length > 0 ? `${running.length} working now` : "All idle"}
-      </span>
-      <span style={{ color: "var(--text-dim)", fontSize: 13 }}>
-        Last activity: {newest.agent} · {newest.task_type}
-        {minutesAgo !== null && ` · ${minutesAgo < 1 ? "just now" : `${minutesAgo} min ago`}`}
-        {newest.message ? ` — ${newest.message}` : ""}
-      </span>
+    <div className="card" style={{ marginBottom: 16 }}>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <span className={`pill ${running.length > 0 ? "pill-info" : "pill-muted"}`}>
+          {running.length > 0 ? `${running.length} working now` : "All idle"}
+        </span>
+        <span style={{ color: "var(--text-dim)", fontSize: 13 }}>
+          Last activity: {newest.agent} · {newest.task_type}
+          {minutesAgo !== null && ` · ${minutesAgo < 1 ? "just now" : `${minutesAgo} min ago`}`}
+          {newest.message ? ` — ${newest.message}` : ""}
+        </span>
+      </div>
+
+      {failed.map((t) => (
+        <div key={t.id} style={{ marginTop: 10 }}>
+          <span className="pill pill-danger">{t.agent} failed</span>
+          <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4, wordBreak: "break-word" }}>
+            {t.error ?? t.message ?? "No reason was recorded."}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
