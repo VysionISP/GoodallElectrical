@@ -76,18 +76,24 @@ integrations, integration_syncs, director_messages, audit_log.
 - Never-fabricate-financial-data behavior: Jobs Floor renders `null` as "Not
   available", never `$0`; provenance tags show LIVE FROM FERGUS / LIVE FROM XERO /
   OWNER PROVIDED / AI INFERRED.
+- `apps/api/src/integrations/fergus.ts` — rewritten against Fergus's real published
+  OpenAPI spec (fetched from https://api.fergus.com/docs), not guessed. Base URL is
+  `https://api.fergus.com` with no path prefix; auth is a Bearer Personal Access
+  Token; a Job has no inline financials or phases (separate
+  `/jobs/{id}/financialSummary` and `/jobs/{id}/phases` calls), no `title` field
+  (mapped from `description`/`longDescription`), and no single "paid" figure
+  (summed from `totalPaid` across `/customerInvoices?jobId={id}`). 429s are
+  retried once honoring `retry-after`, per the documented rate limit (100
+  req/min/company). This has NOT yet been exercised against a live Fergus
+  account/real data in this environment, only validated to match the spec and to
+  build/compile — the next real test is running a sync against an actual company
+  and confirming ELEC-3256-style jobs come back with the expected fields.
 
-**Scaffolded but NOT verified against a live account** (no Fergus/Xero credentials
-were available in this environment):
-- `apps/api/src/integrations/fergus.ts` — endpoint paths and response field names
-  are best-effort, not confirmed against a real payload. **Before trusting this
-  for a real sync**: configure real credentials, call the sync, log the raw
-  response for one real job (e.g. ELEC-3256), and correct `mapFergusJob` to match
-  what Fergus actually returns. Everything downstream only depends on the
-  normalized shape this function produces, so that's the one place to fix.
+**Scaffolded but NOT verified against a live account:**
 - `apps/api/src/integrations/xero.ts` — the OAuth flow itself follows Xero's
-  published spec, but `mapXeroInvoice`'s field names likewise need checking
-  against a real Accounting API response.
+  published spec, but `mapXeroInvoice`'s field names haven't been checked against
+  a real Accounting API response (no Xero docs or credentials were available when
+  this was written — same rule as above applies before trusting it).
 - Google Places / lead generation, sales outreach drafting, and the deeper
   financial scenario-modelling / labour-forecast confidence engine from the brief
   are not built yet — the schema has room for them (`leads`, `lead_research`,

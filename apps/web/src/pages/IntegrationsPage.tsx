@@ -4,8 +4,8 @@ import type { IntegrationSummary } from "../lib/types.js";
 
 const FIELD_MAP: Record<string, { key: string; label: string; secret?: boolean }[]> = {
   fergus: [
-    { key: "apiKey", label: "API key", secret: true },
-    { key: "baseUrl", label: "Base URL (optional)" },
+    { key: "apiKey", label: "Personal Access Token", secret: true },
+    { key: "baseUrl", label: "Base URL (leave blank -- defaults to https://api.fergus.com)" },
   ],
   xero: [
     { key: "clientId", label: "Client ID" },

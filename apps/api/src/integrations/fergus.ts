@@ -1,21 +1,38 @@
 /**
  * Fergus API client.
  *
- * IMPORTANT -- read before wiring this up against a real Fergus account:
- * This session has no Fergus credentials or account access, so the request
- * shapes below (base URL, endpoint paths, auth header, response field
- * names) are best-effort scaffolding, NOT verified against a real payload.
- * Per the product brief's non-negotiable rule #4 ("never assume API
- * response structures, inspect them"), the first thing to do with real
- * credentials is: call GET /jobs (or whatever `listJobs` below actually
- * hits), log the raw JSON for one real job (e.g. ELEC-3256), and correct
- * `mapFergusJob` / the endpoint paths to match what actually comes back.
- * Nothing here should be trusted as ground truth until that happens.
+ * Written against the real Fergus OpenAPI spec (fetched from
+ * https://api.fergus.com/docs on 2026-08-30), not guessed. Key facts from
+ * that spec that shaped this file:
  *
- * The rest of the app depends only on the normalized `NormalizedJob` shape
- * returned by `mapFergusJob`, not on Fergus's raw response shape, so fixing
- * this file is the only place that needs to change once real payloads are
- * inspected.
+ * - Base URL is exactly `https://api.fergus.com` -- no `/v1`, no
+ *   `/api/partner`. (The original guess appended `/v1/jobs` to whatever
+ *   Base URL was configured; if that field ever contains a path prefix,
+ *   every request breaks -- leave it blank unless Fergus support says
+ *   otherwise.)
+ * - Auth is a Bearer token (Personal Access Token) via `Authorization:
+ *   Bearer <token>` -- this part of the original guess was correct.
+ * - `GET /jobs` returns full Job objects, but a Job does NOT embed
+ *   financials or phases. Those are separate calls:
+ *     - `GET /jobs/{jobId}/financialSummary` -- quoted/cost/invoiced
+ *     - `GET /jobs/{jobId}/phases` -- phases
+ *     - `GET /customerInvoices?jobId={jobId}` -- invoices, whose
+ *       `totalPaid` fields have to be summed for a "paid" figure; there is
+ *       no single "amount paid" field on the job or its financial summary.
+ * - A Job has no `title` field. The closest fields are `description`
+ *   (short, e.g. "Main Switch Board Replacement") and `longDescription`
+ *   (detail) -- mapped here to our `title`/`description` respectively.
+ * - The embedded `job.customer` is just `{ id, customerFullName }` -- no
+ *   email/phone/address. Those live on `GET /customers/{id}`.
+ * - `Company.prefix` (from `GET /company`) combined with a job's `jobNo`
+ *   is how a human-facing number like "ELEC-3256" is likely reconstructed
+ *   when the job's own `jobNumber` field is null; both `jobNo` and
+ *   `jobNumber` exist on Job and are used defensively here.
+ * - Rate limit is 100 requests/minute per company; 429 responses carry a
+ *   `retry-after` header, honoured below with a single retry.
+ *
+ * Pagination is cursor-based (`pageCursor` in, `paging.links.next` out as
+ * a full URL), not offset-based.
  */
 
 export interface FergusCredentials {
@@ -49,10 +66,10 @@ export interface NormalizedFergusJob {
 }
 
 function baseUrl(creds: FergusCredentials): string {
-  return creds.baseUrl?.replace(/\/$/, "") ?? "https://api.fergus.com";
+  return creds.baseUrl?.replace(/\/$/, "") || "https://api.fergus.com";
 }
 
-async function fergusFetch(creds: FergusCredentials, path: string): Promise<any> {
+async function fergusFetch(creds: FergusCredentials, path: string, retrying = false): Promise<any> {
   const url = `${baseUrl(creds)}${path}`;
   const res = await fetch(url, {
     headers: {
@@ -60,6 +77,13 @@ async function fergusFetch(creds: FergusCredentials, path: string): Promise<any>
       Accept: "application/json",
     },
   });
+
+  if (res.status === 429 && !retrying) {
+    const retryAfterSeconds = Math.min(Number(res.headers.get("retry-after")) || 2, 10);
+    await new Promise((resolve) => setTimeout(resolve, retryAfterSeconds * 1000));
+    return fergusFetch(creds, path, true);
+  }
+
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(`Fergus API ${res.status} ${res.statusText} on ${path}: ${body.slice(0, 500)}`);
@@ -68,63 +92,119 @@ async function fergusFetch(creds: FergusCredentials, path: string): Promise<any>
 }
 
 export async function testFergusConnection(creds: FergusCredentials): Promise<{ ok: true; detail?: string }> {
-  await fergusFetch(creds, "/v1/jobs?limit=1");
-  return { ok: true, detail: "Connected to Fergus." };
+  const data = await fergusFetch(creds, "/company");
+  return { ok: true, detail: `Connected to Fergus as ${data.data?.name ?? "unknown company"}.` };
 }
 
-/** Fetches the raw job list. Shape is UNVERIFIED -- see file header. */
-export async function listJobsRaw(creds: FergusCredentials): Promise<any[]> {
-  const data = await fergusFetch(creds, "/v1/jobs?limit=200");
-  return Array.isArray(data) ? data : (data.jobs ?? data.data ?? []);
+export async function getCompanyPrefix(creds: FergusCredentials): Promise<string | null> {
+  const data = await fergusFetch(creds, "/company");
+  return data.data?.prefix ?? null;
 }
 
-/** Fetches one job's detail including financials/phases. Shape is UNVERIFIED -- see file header. */
-export async function getJobDetailRaw(creds: FergusCredentials, fergusJobId: string): Promise<any> {
-  return fergusFetch(creds, `/v1/jobs/${encodeURIComponent(fergusJobId)}`);
+/** Follows cursor pagination (paging.links.next) up to a safety cap. */
+export async function listJobsRaw(creds: FergusCredentials, maxPages = 20): Promise<any[]> {
+  const jobs: any[] = [];
+  let path: string | null = "/jobs?pageSize=100";
+  let pages = 0;
+  while (path && pages < maxPages) {
+    const data: any = await fergusFetch(creds, path);
+    jobs.push(...(data.data ?? []));
+    const next = data.paging?.links?.next ?? null;
+    path = next ? next.replace(baseUrl(creds), "") : null;
+    pages++;
+  }
+  return jobs;
+}
+
+export async function getJobFinancialSummaryRaw(creds: FergusCredentials, jobId: number | string): Promise<any> {
+  const data = await fergusFetch(creds, `/jobs/${jobId}/financialSummary`);
+  return data.data ?? null;
+}
+
+export async function getJobPhasesRaw(creds: FergusCredentials, jobId: number | string): Promise<any[]> {
+  const data = await fergusFetch(creds, `/jobs/${jobId}/phases`);
+  return data.data ?? [];
+}
+
+/** Sums CustomerInvoice.totalPaid across every invoice for a job -- there is no single "paid" field anywhere else. */
+export async function getJobPaidAmount(creds: FergusCredentials, jobId: number | string): Promise<number | null> {
+  const data = await fergusFetch(creds, `/customerInvoices?jobId=${jobId}&pageSize=100`);
+  const invoices: any[] = data.data ?? [];
+  if (invoices.length === 0) return null;
+  const total = invoices.reduce((sum, inv) => sum + (Number(inv.totalPaid) || 0), 0);
+  return total;
+}
+
+export async function getCustomerRaw(creds: FergusCredentials, customerId: number | string): Promise<any> {
+  const data = await fergusFetch(creds, `/customers/${customerId}`);
+  return data.data ?? null;
 }
 
 /**
- * Best-effort mapping from a raw Fergus job payload to our normalized
- * shape. Every field is read defensively (multiple possible key names,
- * falling back to null rather than guessing a value) so that once the real
- * schema is confirmed, this function can be tightened rather than rewritten.
- * NEVER fabricate a numeric 0 for a missing financial figure -- null means
- * "not available" and must render as such in the UI, not as $0.
+ * Maps a raw Job (from GET /jobs or GET /jobs/{id}) to our normalized
+ * shape, EXCLUDING financials/phases (fetched and merged separately --
+ * see fergusSync.ts). Never fabricates a numeric 0 for a missing figure.
  */
-export function mapFergusJob(raw: any): NormalizedFergusJob {
-  const customerRaw = raw.customer ?? raw.client ?? null;
-  const financialsRaw = raw.financial_summary ?? raw.financials ?? {};
+export function mapFergusJob(raw: any, companyPrefix: string | null): NormalizedFergusJob {
+  const jobNo: string | null = raw.jobNo != null ? String(raw.jobNo) : null;
+  const jobNumber = raw.jobNumber ?? (companyPrefix && jobNo ? `${companyPrefix}${jobNo}` : jobNo);
+
+  const site = raw.siteAddress;
+  const siteAddress = site
+    ? [site.address1, site.address2, site.addressSuburb, site.addressCity, site.addressRegion, site.addressPostcode]
+        .filter(Boolean)
+        .join(", ") || null
+    : null;
 
   return {
-    fergusJobId: String(raw.id ?? raw.job_id ?? raw.uuid),
-    jobNumber: raw.job_number ?? raw.number ?? raw.reference ?? null,
-    title: raw.title ?? raw.name ?? null,
-    description: raw.description ?? null,
-    siteAddress: raw.site_address ?? raw.address ?? raw.location?.address ?? null,
-    status: raw.status ?? raw.job_status ?? null,
-    customer: customerRaw
+    fergusJobId: String(raw.id),
+    jobNumber,
+    title: raw.description ?? null,
+    description: raw.longDescription ?? null,
+    siteAddress,
+    status: raw.status ?? null,
+    customer: raw.customer
       ? {
-          fergusCustomerId: String(customerRaw.id ?? customerRaw.customer_id),
-          name: customerRaw.name ?? customerRaw.company_name ?? "Unknown",
-          email: customerRaw.email ?? null,
-          phone: customerRaw.phone ?? null,
-          billingAddress: customerRaw.billing_address ?? customerRaw.address ?? null,
+          fergusCustomerId: String(raw.customer.id),
+          name: raw.customer.customerFullName ?? "Unknown",
+          email: null,
+          phone: null,
+          billingAddress: null,
         }
       : null,
-    financials: {
-      quotedAmount: numOrNull(financialsRaw.quoted ?? financialsRaw.quoted_amount),
-      actualCost: numOrNull(financialsRaw.actual_cost ?? financialsRaw.cost),
-      invoicedAmount: numOrNull(financialsRaw.invoiced ?? financialsRaw.invoiced_amount),
-      paidAmount: numOrNull(financialsRaw.paid ?? financialsRaw.paid_amount),
-    },
-    phases: Array.isArray(raw.phases)
-      ? raw.phases.map((p: any) => ({
-          fergusPhaseId: String(p.id ?? p.phase_id),
-          name: p.name ?? "Untitled phase",
-          status: p.status ?? null,
-        }))
-      : [],
+    financials: { quotedAmount: null, actualCost: null, invoicedAmount: null, paidAmount: null },
+    phases: [],
   };
+}
+
+/** Merges a /financialSummary response into a normalized job's financials, in place. */
+export function applyFinancialSummary(job: NormalizedFergusJob, summary: any): void {
+  if (!summary) return;
+  job.financials.quotedAmount = numOrNull(summary.quoteSummary?.quotedAmount);
+  job.financials.actualCost = numOrNull(summary.costsIncurred?.total);
+  job.financials.invoicedAmount = numOrNull(summary.totalBilled?.total);
+}
+
+export function mapFergusPhase(raw: any): { fergusPhaseId: string; name: string; status: string | null } {
+  return {
+    fergusPhaseId: String(raw.id),
+    name: raw.title ?? "Untitled phase",
+    status: raw.status ?? null,
+  };
+}
+
+/** Enriches a normalized customer with contact/address details from GET /customers/{id}. */
+export function applyCustomerDetail(customer: NormalizedFergusCustomer, raw: any): void {
+  if (!raw) return;
+  const contactItems: { contactType: string; contactValue: string }[] = raw.mainContact?.contactItems ?? [];
+  customer.email = contactItems.find((c) => c.contactType === "email")?.contactValue ?? null;
+  customer.phone = contactItems.find((c) => c.contactType === "phone" || c.contactType === "mobile")?.contactValue ?? null;
+  const addr = raw.physicalAddress;
+  customer.billingAddress = addr
+    ? [addr.address1, addr.address2, addr.addressSuburb, addr.addressCity, addr.addressRegion, addr.addressPostcode]
+        .filter(Boolean)
+        .join(", ") || null
+    : null;
 }
 
 function numOrNull(v: unknown): number | null {

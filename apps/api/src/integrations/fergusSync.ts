@@ -4,7 +4,20 @@ import { createAgentTask, updateAgentTask, logAgentEvent } from "../lib/agentTas
 import { createNotification } from "../lib/notifications.js";
 import { recordAudit } from "../lib/audit.js";
 import { getIntegrationCredentials, recordIntegrationSuccess, recordIntegrationError } from "./store.js";
-import { listJobsRaw, mapFergusJob, type FergusCredentials, type NormalizedFergusJob } from "./fergus.js";
+import {
+  listJobsRaw,
+  mapFergusJob,
+  mapFergusPhase,
+  applyFinancialSummary,
+  applyCustomerDetail,
+  getCompanyPrefix,
+  getJobFinancialSummaryRaw,
+  getJobPhasesRaw,
+  getJobPaidAmount,
+  getCustomerRaw,
+  type FergusCredentials,
+  type NormalizedFergusJob,
+} from "./fergus.js";
 
 /**
  * Upserts one normalized Fergus job (+ its customer, financials, phases)
@@ -171,16 +184,40 @@ export async function runFergusSync(): Promise<{ taskId: string; jobsSynced: num
   }
 
   try {
+    const companyPrefix = await getCompanyPrefix(creds);
     const rawJobs = await listJobsRaw(creds);
+    const customerCache = new Map<string, any>();
     let synced = 0;
+
     for (const raw of rawJobs) {
-      const normalized = mapFergusJob(raw);
-      upsertJob(normalized);
-      synced++;
+      const normalized = mapFergusJob(raw, companyPrefix);
       updateAgentTask(taskId, {
         progress: rawJobs.length ? Math.round((synced / rawJobs.length) * 100) : 100,
         message: `Reviewing ${normalized.jobNumber ?? normalized.fergusJobId}`,
       });
+
+      // financials/phases/paid-amount are separate endpoints in the real
+      // API -- a Job object never embeds them (see fergus.ts header).
+      const [financialSummary, phases, paidAmount] = await Promise.all([
+        getJobFinancialSummaryRaw(creds, raw.id).catch(() => null),
+        getJobPhasesRaw(creds, raw.id).catch(() => []),
+        getJobPaidAmount(creds, raw.id).catch(() => null),
+      ]);
+      applyFinancialSummary(normalized, financialSummary);
+      normalized.financials.paidAmount = paidAmount;
+      normalized.phases = phases.map(mapFergusPhase);
+
+      if (normalized.customer) {
+        const custId = normalized.customer.fergusCustomerId;
+        if (!customerCache.has(custId)) {
+          const detail = await getCustomerRaw(creds, custId).catch(() => null);
+          customerCache.set(custId, detail);
+        }
+        applyCustomerDetail(normalized.customer, customerCache.get(custId));
+      }
+
+      upsertJob(normalized);
+      synced++;
     }
 
     updateAgentTask(taskId, { status: "completed", progress: 100, message: `Synced ${synced} jobs` });
