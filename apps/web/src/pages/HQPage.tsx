@@ -25,7 +25,12 @@ export default function HQPage() {
   }, []);
 
   const activeJobs = jobs.filter((j) => j.status && !["completed", "cancelled"].includes(j.status)).length;
-  const overdue = jobs.reduce((sum, j) => sum + (j.outstanding_amount ?? 0), 0);
+  // `?? 0` here was reading 102 jobs with no financial data as a confident
+  // $0 -- exactly the "a missing value must never render as zero" rule this
+  // build is meant to hold. Only jobs that actually carry a number count,
+  // and if none do, the tile says so instead of inventing a total.
+  const jobsWithOutstanding = jobs.filter((j) => typeof j.outstanding_amount === "number");
+  const outstanding = jobsWithOutstanding.reduce((sum, j) => sum + (j.outstanding_amount as number), 0);
 
   return (
     <div>
@@ -42,7 +47,14 @@ export default function HQPage() {
           <StatCard label="Active jobs" value={jobs.length ? String(activeJobs) : "—"} />
           <StatCard label="Pending approvals" value={String(approvals.length)} accent={approvals.length > 0 ? "warn" : undefined} />
           <StatCard label="Unread notifications" value={String(notifications.length)} accent={notifications.length > 0 ? "info" : undefined} />
-          <StatCard label="Outstanding (known jobs)" value={jobs.length ? formatMoney(overdue) : "—"} />
+          <StatCard
+            label={
+              jobsWithOutstanding.length > 0
+                ? `Outstanding (${jobsWithOutstanding.length} of ${jobs.length} jobs)`
+                : "Outstanding"
+            }
+            value={jobsWithOutstanding.length > 0 ? formatMoney(outstanding) : "Not available"}
+          />
         </div>
 
         <RoomMap />

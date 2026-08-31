@@ -65,8 +65,16 @@ const RESPONSE_SCHEMA = {
           required: ["category", "content"],
         },
       },
+      action: {
+        type: "string",
+        description:
+          "A real job to actually start right now, if the owner just asked for one. 'none' unless they clearly " +
+          "asked for that specific thing. These are the ONLY things you can make happen -- anything else, you " +
+          "must tell the owner you can't do it rather than implying you will.",
+        enum: ["none", "run_lead_sweep", "run_fergus_sync", "run_xero_sync"],
+      },
     },
-    required: ["reply", "jobUpdates", "newQuestions", "businessFacts"],
+    required: ["reply", "jobUpdates", "newQuestions", "businessFacts", "action"],
   },
 } as const;
 
@@ -93,7 +101,79 @@ Absolute rules:
   When reasoning about a new hire or purchase, use the real loaded_hourly_cost from employees if relevant, and be
   explicit about which numbers are real (from the forecast) versus your own estimate.
 - If you still need information to finish an assessment, add it to newQuestions rather than guessing.
-- Keep replies concise and business-like, the way a competent operations manager would talk to the owner.`;
+- Keep replies concise and business-like, the way a competent operations manager would talk to the owner.
+
+NEVER PROMISE WORK YOU ARE NOT ACTUALLY STARTING. This is the most important rule here.
+You cannot do anything in the background between messages. You have no ability to "keep an eye on"
+something, "get started on it", "keep you updated", "work on it in the background", or come back later with
+results. Nothing happens after this reply unless you set the "action" field, which really does start that job.
+- If the owner asks for one of the actions you have (find leads / sweep for customers -> run_lead_sweep,
+  refresh jobs from Fergus -> run_fergus_sync, refresh invoices and cash from Xero -> run_xero_sync), set it.
+  Do not describe what you are about to do -- it is already running, so say what was started, briefly.
+- If they ask for anything else -- assigning a worker in Fergus, phoning a customer, ordering materials,
+  booking anything, or any "look into it and get back to me" -- say plainly that you can't do that, name what
+  you CAN do or what they need to click, and stop. Do not soften it into a promise.
+- Banned phrasings, because they are false: "I'll start...", "I'll begin...", "I'm working on...",
+  "I'll keep you updated", "I'll let you know", "leave it with me", "I'll monitor", "in the background".`;
+
+type DirectorAction = "none" | "run_lead_sweep" | "run_fergus_sync" | "run_xero_sync";
+
+/**
+ * Actually starts the job the Director just said it started.
+ *
+ * The Director used to reply "I'll start the lead generation process and
+ * keep you updated" with no code path anywhere that could make that true --
+ * it invented having done something. Now the only future work it can refer
+ * to is work this function really kicks off, and the sentence appended to
+ * its reply describes a real agent_task the owner can watch on the HQ map.
+ *
+ * These runs take far longer than an HTTP request should, so they're
+ * started and left running rather than awaited. Nothing here can send
+ * anything to a customer -- a sweep creates leads and drafts, and the
+ * approval firewall still stands between a draft and an actual send.
+ */
+async function startDirectorAction(action: DirectorAction): Promise<string | null> {
+  if (action === "none") return null;
+
+  const [{ runAreaSweep }, { runFergusSync }, { runXeroSync }] = await Promise.all([
+    import("./leadHunter.js"),
+    import("../integrations/fergusSync.js"),
+    import("../integrations/xeroSync.js"),
+  ]);
+
+  /**
+   * Claiming "started" the instant a promise is created is its own lie:
+   * these jobs reject almost immediately when an integration isn't
+   * configured, so the Director would announce a sweep that never existed.
+   * Give it a moment to fail first -- if it's still going after that, it
+   * really is running and there's a task row to point at.
+   */
+  const started = async (label: string, run: () => Promise<unknown>, room: string) => {
+    let settled: { ok: true } | { ok: false; error: string } | null = null;
+    const promise = run().then(
+      () => {
+        settled = { ok: true };
+      },
+      (err: any) => {
+        settled = { ok: false, error: err?.message ?? String(err) };
+        console.error(`[director] ${label} failed:`, err?.message ?? err);
+      }
+    );
+
+    await Promise.race([promise, new Promise((r) => setTimeout(r, 1500))]);
+
+    if (settled && !(settled as { ok: boolean }).ok) {
+      return `\n\nI couldn't start ${label}: ${(settled as { ok: false; error: string }).error}`;
+    }
+    if (settled) return `\n\nRan ${label} just now -- results are in already.`;
+    return `\n\nStarted now: ${label}. You can watch it on the HQ map (${room}), and I'll have the results next time you ask.`;
+  };
+
+  if (action === "run_lead_sweep") return started("a lead sweep of your service area", runAreaSweep, "Lead Radar");
+  if (action === "run_fergus_sync") return started("a Fergus sync", runFergusSync, "Jobs Floor");
+  if (action === "run_xero_sync") return started("a Xero sync", runXeroSync, "Finance Vault");
+  return null;
+}
 
 export interface DirectorTurnResult {
   ownerMessageId: string;
@@ -147,6 +227,7 @@ export async function runDirectorTurn(ownerMessage: string): Promise<DirectorTur
       jobUpdates: { jobNumber: string; key: string; value: string; confidence: number }[];
       newQuestions: { jobNumber: string | null; question: string }[];
       businessFacts: { category: string; content: string }[];
+      action?: DirectorAction;
     };
 
     let applied = 0;
@@ -208,13 +289,25 @@ export async function runDirectorTurn(ownerMessage: string): Promise<DirectorTur
       });
     }
 
+    // Run whatever the Director said it was doing, and append what really
+    // started -- so the message the owner reads describes an actual
+    // agent_task, never an intention.
+    const action = parsed.action ?? "none";
+    const actionNote = await startDirectorAction(action);
+    const reply = actionNote ? `${parsed.reply}${actionNote}` : parsed.reply;
+
     const directorMessageId = newId("dmsg");
     db.prepare(
       `INSERT INTO director_messages (id, role, content, extracted_data, created_at) VALUES (?, 'director', ?, ?, ?)`
     ).run(
       directorMessageId,
-      parsed.reply,
-      JSON.stringify({ jobUpdates: parsed.jobUpdates, newQuestions: parsed.newQuestions, businessFacts: parsed.businessFacts }),
+      reply,
+      JSON.stringify({
+        jobUpdates: parsed.jobUpdates,
+        newQuestions: parsed.newQuestions,
+        businessFacts: parsed.businessFacts,
+        action,
+      }),
       nowIso()
     );
 
@@ -222,13 +315,13 @@ export async function runDirectorTurn(ownerMessage: string): Promise<DirectorTur
     recordAudit({
       actor: "director",
       action: "director_chat_turn",
-      details: { jobUpdatesApplied: applied, questionsRaised, businessFactsSaved: factsSaved },
+      details: { jobUpdatesApplied: applied, questionsRaised, businessFactsSaved: factsSaved, actionStarted: action },
     });
 
     return {
       ownerMessageId,
       directorMessageId,
-      reply: parsed.reply,
+      reply,
       jobUpdatesApplied: applied,
       questionsRaised,
       businessFactsSaved: factsSaved,
