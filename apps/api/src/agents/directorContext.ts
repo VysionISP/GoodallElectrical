@@ -29,15 +29,32 @@ export function buildDirectorContext() {
   const recentNotifications = db
     .prepare("SELECT type, severity, title, message FROM notifications ORDER BY created_at DESC LIMIT 10")
     .all();
+  // site_address was missing here, so asked "where was this job for" the
+  // Director had nothing and invented a site -- naming a real customer
+  // that the job had nothing to do with. A field it isn't given is a field
+  // it will guess, so anything it might be asked about belongs in here.
   const jobsSummary = db
     .prepare(
-      `SELECT j.job_number, j.title, j.status, c.name as customer_name,
+      `SELECT j.job_number, j.title, j.description, j.status, j.site_address,
+              c.name as customer_name,
               f.quoted_amount, f.actual_cost, f.invoiced_amount, f.paid_amount
        FROM jobs j LEFT JOIN customers c ON c.id = j.customer_id
        LEFT JOIN job_financials f ON f.job_id = j.id
        ORDER BY j.updated_at DESC LIMIT 30`
     )
     .all();
+
+  // Leads were absent entirely, so "give me a list of the leads you found"
+  // got "I can't provide that" while the rows sat in the database.
+  const leads = db
+    .prepare(
+      `SELECT business_name, location, website, contact_email, contact_phone, lead_score, status, reason
+       FROM leads ORDER BY (lead_score IS NULL), lead_score DESC, created_at DESC LIMIT 25`
+    )
+    .all();
+  const leadCounts = db
+    .prepare("SELECT status, COUNT(*) as c FROM leads GROUP BY status")
+    .all() as { status: string; c: number }[];
 
   // Real cashflow data so the Director can actually answer scenario
   // questions ("can we afford another electrician?") with numbers instead
@@ -84,6 +101,8 @@ export function buildDirectorContext() {
     businessMemory,
     recentNotifications,
     jobs: jobsSummary,
+    leads,
+    leadCounts,
     cashflowForecast,
     dataGaps,
   };
