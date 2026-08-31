@@ -178,13 +178,95 @@ export async function getJobPhasesRaw(creds: FergusCredentials, jobId: number | 
   return data.data ?? [];
 }
 
+/** Every customer invoice raised against a job. */
+export async function listJobInvoicesRaw(creds: FergusCredentials, jobId: number | string): Promise<any[]> {
+  const data = await fergusFetch(creds, `/customerInvoices?jobId=${jobId}&pageSize=100`);
+  return data.data ?? [];
+}
+
 /** Sums CustomerInvoice.totalPaid across every invoice for a job -- there is no single "paid" field anywhere else. */
 export async function getJobPaidAmount(creds: FergusCredentials, jobId: number | string): Promise<number | null> {
-  const data = await fergusFetch(creds, `/customerInvoices?jobId=${jobId}&pageSize=100`);
-  const invoices: any[] = data.data ?? [];
+  const invoices = await listJobInvoicesRaw(creds, jobId);
   if (invoices.length === 0) return null;
-  const total = invoices.reduce((sum, inv) => sum + (Number(inv.totalPaid) || 0), 0);
-  return total;
+  return invoices.reduce((sum, inv) => sum + (Number(inv.totalPaid) || 0), 0);
+}
+
+export interface NormalizedFergusInvoice {
+  fergusInvoiceId: string;
+  invoiceNumber: string | null;
+  issueDate: string | null;
+  dueDate: string | null;
+  total: number | null;
+  amountPaid: number | null;
+  amountDue: number | null;
+  rawStatus: string | null;
+}
+
+function firstNum(raw: any, keys: string[]): number | null {
+  for (const k of keys) {
+    const v = raw?.[k];
+    if (v !== undefined && v !== null && v !== "" && Number.isFinite(Number(v))) return Number(v);
+  }
+  return null;
+}
+
+function firstStr(raw: any, keys: string[]): string | null {
+  for (const k of keys) {
+    const v = raw?.[k];
+    if (typeof v === "string" && v.trim() !== "") return v;
+    if (typeof v === "number") return String(v);
+  }
+  return null;
+}
+
+/**
+ * Maps a Fergus CustomerInvoice defensively.
+ *
+ * Only `totalPaid` is confirmed from the spec; the rest of the field names
+ * could not be verified against a live payload from this environment. So
+ * each value is looked for under several plausible names rather than one
+ * assumed name, and anything not found stays null instead of becoming a
+ * fabricated zero. The sync reports the field names actually returned when
+ * nothing maps, so a mismatch is a one-round fix rather than a silent
+ * empty screen -- the same failure that left 102 jobs with no financials.
+ */
+export function mapFergusInvoice(raw: any): NormalizedFergusInvoice {
+  const total = firstNum(raw, ["total", "totalAmount", "totalGross", "amount", "invoiceTotal", "totalIncTax"]);
+  const paid = firstNum(raw, ["totalPaid", "amountPaid", "paidAmount", "paid"]);
+  const due = firstNum(raw, ["amountDue", "totalDue", "balance", "balanceDue", "outstanding", "amountOutstanding"]);
+
+  return {
+    fergusInvoiceId: String(raw?.id ?? raw?.invoiceId ?? raw?.customerInvoiceId ?? ""),
+    invoiceNumber: firstStr(raw, ["invoiceNumber", "invoiceNo", "number", "reference"]),
+    issueDate: firstStr(raw, ["issueDate", "invoiceDate", "date", "createdAt", "issuedAt"]),
+    dueDate: firstStr(raw, ["dueDate", "paymentDueDate", "dateDue", "due"]),
+    total,
+    amountPaid: paid,
+    // Fall back to total - paid only when both are actually known.
+    amountDue: due ?? (total !== null && paid !== null ? Math.round((total - paid) * 100) / 100 : null),
+    rawStatus: firstStr(raw, ["status", "invoiceStatus", "state"]),
+  };
+}
+
+/**
+ * Derives our invoice status from real dates and amounts rather than
+ * trusting a provider status string, so "overdue" always means the money
+ * is genuinely late. Mirrors the Xero mapper's approach.
+ */
+export function deriveFergusInvoiceStatus(inv: NormalizedFergusInvoice): string {
+  const raw = (inv.rawStatus ?? "").toUpperCase();
+  if (raw.includes("VOID") || raw.includes("CANCEL") || raw.includes("DELET")) return "void";
+  if (raw.includes("DRAFT")) return "draft";
+
+  const dueAmount = inv.amountDue;
+  if (dueAmount !== null && dueAmount <= 0 && (inv.total ?? 0) > 0) return "paid";
+
+  if (inv.dueDate && dueAmount !== null && dueAmount > 0) {
+    const due = new Date(inv.dueDate);
+    if (!Number.isNaN(due.getTime()) && due.getTime() < Date.now()) return "overdue";
+  }
+  if (dueAmount !== null && inv.amountPaid !== null && inv.amountPaid > 0 && dueAmount > 0) return "part_paid";
+  return "sent";
 }
 
 export async function getCustomerRaw(creds: FergusCredentials, customerId: number | string): Promise<any> {

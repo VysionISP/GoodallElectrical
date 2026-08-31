@@ -15,9 +15,61 @@ import {
   getJobPhasesRaw,
   getJobPaidAmount,
   getCustomerRaw,
+  listJobInvoicesRaw,
+  mapFergusInvoice,
+  deriveFergusInvoiceStatus,
   type FergusCredentials,
   type NormalizedFergusJob,
 } from "./fergus.js";
+
+/**
+ * Stores a job's Fergus customer invoices so overdue money is visible.
+ *
+ * Previously these were fetched only to sum totalPaid and then discarded,
+ * so an owner who invoices out of Fergus saw "Nothing overdue right now"
+ * while real overdue invoices sat in Fergus. Returns how many mapped
+ * usably, and the field names actually present when none did.
+ */
+function upsertFergusInvoices(jobId: string, customerId: string | null, rawInvoices: any[]): { stored: number; unmappable: number; observedKeys: string | null } {
+  const db = getDb();
+  const now = nowIso();
+  let stored = 0;
+  let unmappable = 0;
+  let observedKeys: string | null = null;
+
+  for (const raw of rawInvoices) {
+    const inv = mapFergusInvoice(raw);
+    if (!inv.fergusInvoiceId || (inv.total === null && inv.amountDue === null)) {
+      unmappable++;
+      if (observedKeys === null && raw && typeof raw === "object") {
+        observedKeys = Object.keys(raw).join(", ") || "(empty object)";
+      }
+      continue;
+    }
+
+    const status = deriveFergusInvoiceStatus(inv);
+    const existing = db.prepare("SELECT id FROM invoices WHERE fergus_invoice_id = ?").get(inv.fergusInvoiceId) as
+      | { id: string }
+      | undefined;
+
+    if (existing) {
+      db.prepare(
+        `UPDATE invoices SET job_id = ?, customer_id = ?, invoice_number = ?, status = ?, issue_date = ?, due_date = ?,
+                total = ?, amount_paid = ?, amount_due = ?, last_synced_at = ?, updated_at = ? WHERE id = ?`
+      ).run(jobId, customerId, inv.invoiceNumber, status, inv.issueDate, inv.dueDate, inv.total, inv.amountPaid, inv.amountDue, now, now, existing.id);
+    } else {
+      db.prepare(
+        `INSERT INTO invoices (id, job_id, customer_id, fergus_invoice_id, invoice_number, status, issue_date, due_date,
+                               total, amount_paid, amount_due, source, last_synced_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'fergus', ?, ?, ?)`
+      ).run(newId("inv"), jobId, customerId, inv.fergusInvoiceId, inv.invoiceNumber, status, inv.issueDate, inv.dueDate,
+            inv.total, inv.amountPaid, inv.amountDue, now, now, now);
+    }
+    stored++;
+  }
+
+  return { stored, unmappable, observedKeys };
+}
 
 /**
  * Upserts one normalized Fergus job (+ its customer, financials, phases)
@@ -212,6 +264,9 @@ export async function runFergusSync(): Promise<{ taskId: string; jobsSynced: num
     let finEmpty = 0;
     let firstFinError: string | null = null;
     let observedFinancialKeys: string | null = null;
+    let invoicesStored = 0;
+    let invoicesUnmappable = 0;
+    let invoiceKeys: string | null = null;
 
     for (const raw of rawJobs) {
       const normalized = mapFergusJob(raw, companyPrefix);
@@ -222,10 +277,10 @@ export async function runFergusSync(): Promise<{ taskId: string; jobsSynced: num
 
       // financials/phases/paid-amount are separate endpoints in the real
       // API -- a Job object never embeds them (see fergus.ts header).
-      const [finRes, phaseRes, paidRes] = await Promise.all([
+      const [finRes, phaseRes, invRes] = await Promise.all([
         attempt(getJobFinancialSummaryRaw(creds, raw.id)),
         attempt(getJobPhasesRaw(creds, raw.id)),
-        attempt(getJobPaidAmount(creds, raw.id)),
+        attempt(listJobInvoicesRaw(creds, raw.id)),
       ]);
 
       if (finRes.ok) {
@@ -251,8 +306,16 @@ export async function runFergusSync(): Promise<{ taskId: string; jobsSynced: num
         if (!firstFinError) firstFinError = finRes.error;
       }
 
-      normalized.financials.paidAmount = paidRes.ok ? paidRes.value : null;
-      if (!paidRes.ok && !firstFinError) firstFinError = paidRes.error;
+      // "Paid" is the sum of these invoices' paid amounts -- there is no
+      // single paid field on a job -- so it comes from the same fetch that
+      // now also stores the invoices themselves.
+      const rawInvoices = invRes.ok ? invRes.value : [];
+      normalized.financials.paidAmount = invRes.ok
+        ? rawInvoices.length > 0
+          ? rawInvoices.reduce((sum: number, i: any) => sum + (Number(i.totalPaid) || 0), 0)
+          : null
+        : null;
+      if (!invRes.ok && !firstFinError) firstFinError = invRes.error;
       normalized.phases = (phaseRes.ok ? phaseRes.value : []).map(mapFergusPhase);
 
       if (normalized.customer) {
@@ -264,7 +327,20 @@ export async function runFergusSync(): Promise<{ taskId: string; jobsSynced: num
         applyCustomerDetail(normalized.customer, customerCache.get(custId));
       }
 
-      upsertJob(normalized);
+      const localJobId = upsertJob(normalized);
+
+      if (rawInvoices.length > 0) {
+        const customerRow = normalized.customer
+          ? (db.prepare("SELECT id FROM customers WHERE fergus_customer_id = ?").get(normalized.customer.fergusCustomerId) as
+              | { id: string }
+              | undefined)
+          : undefined;
+        const result = upsertFergusInvoices(localJobId, customerRow?.id ?? null, rawInvoices);
+        invoicesStored += result.stored;
+        invoicesUnmappable += result.unmappable;
+        if (invoiceKeys === null && result.observedKeys) invoiceKeys = result.observedKeys;
+      }
+
       synced++;
     }
 
@@ -281,6 +357,16 @@ export async function runFergusSync(): Promise<{ taskId: string; jobsSynced: num
           : `Fergus answered, but none of the expected amounts were present. Fields it actually returned: ${observedFinancialKeys ?? "(none)"}`);
     } else if (financialsMissing > 0) {
       financialsNote = `${finOk} job(s) have financials; ${financialsMissing} do not` + (firstFinError ? ` (first error: ${firstFinError})` : "");
+    }
+
+    // Invoices decide whether anything can ever show as overdue, so a
+    // failure to map them has to be said out loud rather than leaving the
+    // Debtors page confidently empty.
+    if (invoicesUnmappable > 0 && invoicesStored === 0) {
+      const note =
+        `${invoicesUnmappable} Fergus invoice(s) came back but none could be read -- ` +
+        `fields actually returned: ${invoiceKeys ?? "(none)"}. Overdue amounts will stay empty until this maps.`;
+      financialsNote = financialsNote ? `${financialsNote} | ${note}` : note;
     }
 
     updateAgentTask(taskId, {
