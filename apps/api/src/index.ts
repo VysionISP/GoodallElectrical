@@ -15,6 +15,7 @@ import auditLogRouter from "./routes/auditLog.js";
 import directorRouter from "./routes/director.js";
 import leadsRouter from "./routes/leads.js";
 import businessMemoryRouter from "./routes/businessMemory.js";
+import { runBackgroundReview } from "./agents/backgroundReview.js";
 
 // Idempotent -- safe on an empty DB, a partially migrated DB, or an
 // up-to-date DB. This is the fix for the historical
@@ -92,3 +93,29 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
 app.listen(PORT, () => {
   console.log(`[api] listening on http://localhost:${PORT}`);
 });
+
+// The Director's unprompted background pass: while this process is
+// running, it periodically reviews the business on its own initiative
+// (checking for a missing business profile, reviewing newly-synced Fergus
+// jobs) instead of only ever reacting to a chat message. Honest caveat:
+// this only runs while the API process itself is running -- `npm run dev`
+// on a laptop is not a 24/7 deployment, so "runs overnight" requires
+// actually hosting this somewhere that stays up.
+const BACKGROUND_REVIEW_INTERVAL_MS = 30 * 60 * 1000;
+let backgroundReviewRunning = false;
+async function scheduleBackgroundReview() {
+  if (backgroundReviewRunning) return;
+  backgroundReviewRunning = true;
+  try {
+    const result = await runBackgroundReview();
+    console.log(
+      `[director] background review: ${result.questionsRaised} question(s) raised, ${result.jobsReviewed} job(s) reviewed`
+    );
+  } catch (err: any) {
+    console.error("[director] background review failed:", err?.message ?? err);
+  } finally {
+    backgroundReviewRunning = false;
+  }
+}
+setTimeout(scheduleBackgroundReview, 10_000);
+setInterval(scheduleBackgroundReview, BACKGROUND_REVIEW_INTERVAL_MS);

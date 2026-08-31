@@ -152,7 +152,38 @@ Also fixed while building this: Google Places Text Search can return the
 locality/suburb/postcode itself as a result alongside real businesses (e.g.
 searching near "Sale VIC" returned "Sale" itself as a "lead"). `isLikelyBusiness()`
 in `googlePlaces.ts` filters out results whose only Places types are
-administrative/geographic (locality, postal_code, route, etc.).
+administrative/geographic (locality, postal_code, route, etc.). A second filter,
+`isCompetitor()`, excludes results Google itself types as `electrician` -- a lead
+search should find customers, not other electrical contractors.
+
+## The Director now runs unprompted, not just when you message it
+
+Two real gaps, both from direct feedback: the owner shouldn't have to visit a
+settings page to tell the AI what services the business offers, and nothing was
+ever running unless the owner sent a chat message first.
+
+- **Director chat now extracts general business facts, not just job facts**
+  (`businessFacts` in the structured-output schema, `apps/api/src/agents/director.ts`).
+  Tell the Director in conversation "we do switchboard upgrades and EV chargers,
+  we work within 80km of Sale VIC" and it saves that into `business_memory`
+  itself -- the Business Profile page still exists for reviewing/editing, but
+  it's no longer the only way in.
+- **A background review now runs on its own** (`apps/api/src/agents/backgroundReview.ts`),
+  on server startup and every 30 minutes while the API process is running:
+  - If there's no "services" business memory yet, it raises an open
+    `ai_question` unprompted -- verified live, appearing in "Needs You" with
+    zero owner action taken beforehand.
+  - It reviews up to 5 recently-synced Fergus jobs per cycle that have never
+    been looked at (tracked via a `_ai_reviewed` job_context marker so the same
+    job isn't re-processed, and re-billed against the OpenAI key, every cycle)
+    and raises real operational questions when relevant (crew size, night work,
+    shutdown timing, etc.) -- this is the "Operations AI asks about the job"
+    behavior from section 7 of the original brief, which existed in the schema
+    but had no actual logic behind it until now.
+  - Honest limitation: this only runs while the API process itself is running.
+    `npm run dev` on a laptop is not a 24/7 deployment -- genuinely autonomous
+    overnight review needs this hosted somewhere that stays up, which is future
+    work, not something to pretend already exists.
 
 ## Non-negotiables this build respects
 

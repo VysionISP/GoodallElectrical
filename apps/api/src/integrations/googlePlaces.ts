@@ -127,6 +127,20 @@ export function isLikelyBusiness(place: NormalizedPlace): boolean {
   return place.types.some((t) => !NON_BUSINESS_TYPES.has(t));
 }
 
+/**
+ * A lead search should surface potential CUSTOMERS, not other businesses
+ * doing the same trade -- Google's own "electrician" Places type is a
+ * reliable signal a result is a competitor, not a prospect. Checked by
+ * type rather than by name (a name like "Electric Avenue Cafe" containing
+ * "electric" is not a competitor and shouldn't be excluded on a text
+ * heuristic).
+ */
+const COMPETITOR_TYPES = new Set(["electrician"]);
+
+export function isCompetitor(place: NormalizedPlace): boolean {
+  return place.types.some((t) => COMPETITOR_TYPES.has(t));
+}
+
 export function mapPlace(raw: any): NormalizedPlace {
   return {
     placeId: String(raw.id),

@@ -5,7 +5,7 @@ import { createNotification } from "../lib/notifications.js";
 import { recordAudit } from "../lib/audit.js";
 import { getIntegrationCredentials } from "../integrations/store.js";
 import { getOpenAiClient } from "../integrations/openai.js";
-import { searchTextRaw, mapPlace, isLikelyBusiness, type GooglePlacesCredentials } from "../integrations/googlePlaces.js";
+import { searchTextRaw, mapPlace, isLikelyBusiness, isCompetitor, type GooglePlacesCredentials } from "../integrations/googlePlaces.js";
 
 const MODEL = process.env.OPENAI_MODEL ?? "gpt-4o-mini";
 
@@ -40,6 +40,8 @@ async function searchAndUpsert(creds: GooglePlacesCredentials, query: string): P
     // real businesses (e.g. "Sale, VIC" showing up for a query mentioning
     // "Sale VIC") -- skip anything that isn't actually a business.
     if (!isLikelyBusiness(place)) continue;
+    // A lead search should find customers, not other electricians.
+    if (isCompetitor(place)) continue;
     businessCount++;
 
     const existing = db
@@ -146,10 +148,14 @@ export async function suggestSearchQueries(): Promise<string[]> {
       {
         role: "system",
         content:
-          "You suggest Google Places text search queries to find potential customers for an electrical " +
-          "contracting business, based only on the services and service area it actually lists. Never invent a " +
-          "service or a location it didn't state. If no service area was given, write location-agnostic queries " +
-          "(e.g. end with 'near [area]' as a literal placeholder for the owner to fill in) rather than guessing one.",
+          "You suggest Google Places text search queries to find potential CUSTOMERS for an electrical " +
+          "contracting business, based only on the services and service area it actually lists. The goal is " +
+          "businesses and property types that would need this work done, e.g. property managers, retail chains, " +
+          "hospitality venues, offices, strata/body corporate managers -- NEVER other electricians, electrical " +
+          "contractors, or sparkies. Do not write a query like 'electricians near X' or 'electrical services near " +
+          "X', since that returns competitors, not customers. Never invent a service or a location it didn't " +
+          "state. If no service area was given, write location-agnostic queries (e.g. end with 'near [area]' as a " +
+          "literal placeholder for the owner to fill in) rather than guessing one.",
       },
       {
         role: "user",

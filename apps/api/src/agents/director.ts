@@ -48,8 +48,27 @@ const RESPONSE_SCHEMA = {
           required: ["jobNumber", "question"],
         },
       },
+      businessFacts: {
+        type: "array",
+        description:
+          "General business knowledge the owner just told you that ISN'T tied to one job -- what services the " +
+          "business offers, its service area, pricing rules, or job types it won't take. Only include a fact if " +
+          "the owner's message actually states it.",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            category: {
+              type: "string",
+              enum: ["services", "service_area", "pricing", "exclusions", "other"],
+            },
+            content: { type: "string", description: "The fact itself, written as a standalone statement." },
+          },
+          required: ["category", "content"],
+        },
+      },
     },
-    required: ["reply", "jobUpdates", "newQuestions"],
+    required: ["reply", "jobUpdates", "newQuestions", "businessFacts"],
   },
 } as const;
 
@@ -61,6 +80,13 @@ Absolute rules:
 - Never invent a fact you were not given. If you don't know something, say so and ask.
 - When the owner's message gives you a concrete fact about a specific job (crew size, night work,
   shutdown timing, materials status, access, etc.), extract it into jobUpdates against that job's number.
+- When the owner tells you something general about the BUSINESS rather than one job -- what services you offer,
+  where you're willing to work, pricing rules, job types you don't take -- extract it into businessFacts, not
+  jobUpdates. This is important: don't make the owner fill out a settings form for this, just listen for it in
+  conversation and save it yourself.
+- If the business context shows no "services" business memory yet, and the owner hasn't just told you in this
+  message, ask what services the business offers and what area it wants to work in -- this blocks lead generation
+  and job profitability judgement, so it's worth asking about early rather than waiting to be asked.
 - If you still need information to finish an assessment, add it to newQuestions rather than guessing.
 - Keep replies concise and business-like, the way a competent operations manager would talk to the owner.`;
 
@@ -70,6 +96,7 @@ export interface DirectorTurnResult {
   reply: string;
   jobUpdatesApplied: number;
   questionsRaised: number;
+  businessFactsSaved: number;
 }
 
 export async function runDirectorTurn(ownerMessage: string): Promise<DirectorTurnResult> {
@@ -88,7 +115,7 @@ export async function runDirectorTurn(ownerMessage: string): Promise<DirectorTur
     db.prepare(
       `INSERT INTO director_messages (id, role, content, created_at) VALUES (?, 'director', ?, ?)`
     ).run(directorMessageId, reply, nowIso());
-    return { ownerMessageId, directorMessageId, reply, jobUpdatesApplied: 0, questionsRaised: 0 };
+    return { ownerMessageId, directorMessageId, reply, jobUpdatesApplied: 0, questionsRaised: 0, businessFactsSaved: 0 };
   }
 
   const taskId = createAgentTask({ agent: "director", taskType: "director_chat", room: "director" });
@@ -117,6 +144,7 @@ export async function runDirectorTurn(ownerMessage: string): Promise<DirectorTur
       reply: string;
       jobUpdates: { jobNumber: string; key: string; value: string; confidence: number }[];
       newQuestions: { jobNumber: string | null; question: string }[];
+      businessFacts: { category: string; content: string }[];
     };
 
     let applied = 0;
@@ -138,6 +166,24 @@ export async function runDirectorTurn(ownerMessage: string): Promise<DirectorTur
       db.prepare(
         `UPDATE ai_questions SET status = 'answered', updated_at = ? WHERE entity_type = 'job' AND entity_id = ? AND status = 'open' AND question LIKE '%' || ? || '%'`
       ).run(nowTs, job.id, update.key.replace(/_/g, " "));
+    }
+
+    let factsSaved = 0;
+    for (const fact of parsed.businessFacts) {
+      const nowTs = nowIso();
+      db.prepare(
+        `INSERT INTO business_memory (id, content, category, created_by, active, created_at, updated_at)
+         VALUES (?, ?, ?, 'owner', 1, ?, ?)`
+      ).run(newId("bmem"), fact.content, fact.category, nowTs, nowTs);
+      factsSaved++;
+    }
+    // A "what services do you offer" style open question is satisfied the
+    // moment the owner states any business fact in chat -- close it rather
+    // than leaving it open now that the information actually exists.
+    if (factsSaved > 0) {
+      db.prepare(
+        `UPDATE ai_questions SET status = 'answered', updated_at = ? WHERE status = 'open' AND entity_type IS NULL AND (question LIKE '%services%' OR question LIKE '%area%')`
+      ).run(nowIso());
     }
 
     let questionsRaised = 0;
@@ -163,16 +209,28 @@ export async function runDirectorTurn(ownerMessage: string): Promise<DirectorTur
     const directorMessageId = newId("dmsg");
     db.prepare(
       `INSERT INTO director_messages (id, role, content, extracted_data, created_at) VALUES (?, 'director', ?, ?, ?)`
-    ).run(directorMessageId, parsed.reply, JSON.stringify({ jobUpdates: parsed.jobUpdates, newQuestions: parsed.newQuestions }), nowIso());
+    ).run(
+      directorMessageId,
+      parsed.reply,
+      JSON.stringify({ jobUpdates: parsed.jobUpdates, newQuestions: parsed.newQuestions, businessFacts: parsed.businessFacts }),
+      nowIso()
+    );
 
     updateAgentTask(taskId, { status: "completed", progress: 100 });
     recordAudit({
       actor: "director",
       action: "director_chat_turn",
-      details: { jobUpdatesApplied: applied, questionsRaised },
+      details: { jobUpdatesApplied: applied, questionsRaised, businessFactsSaved: factsSaved },
     });
 
-    return { ownerMessageId, directorMessageId, reply: parsed.reply, jobUpdatesApplied: applied, questionsRaised };
+    return {
+      ownerMessageId,
+      directorMessageId,
+      reply: parsed.reply,
+      jobUpdatesApplied: applied,
+      questionsRaised,
+      businessFactsSaved: factsSaved,
+    };
   } catch (err: any) {
     updateAgentTask(taskId, { status: "failed", error: err?.message ?? String(err) });
     throw err;
