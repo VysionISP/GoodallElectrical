@@ -2,7 +2,7 @@ import { getDb } from "../db/connection.js";
 import { newId, nowIso } from "../lib/ids.js";
 import { encryptJson, decryptJson, maskCredentials } from "../lib/crypto.js";
 
-export type Provider = "fergus" | "xero" | "openai" | "smtp" | "google_places";
+export type Provider = "fergus" | "xero" | "openai" | "openrouter" | "smtp" | "google_places";
 
 export interface IntegrationRow {
   id: string;
@@ -42,7 +42,7 @@ function toSummary(row: IntegrationRow): IntegrationSummary {
 
 export function listIntegrations(): IntegrationSummary[] {
   const db = getDb();
-  const providers: Provider[] = ["fergus", "xero", "openai", "smtp", "google_places"];
+  const providers: Provider[] = ["fergus", "xero", "openai", "openrouter", "smtp", "google_places"];
   const existing = db.prepare("SELECT * FROM integrations").all() as IntegrationRow[];
   const byProvider = new Map(existing.map((r) => [r.provider, r]));
   return providers.map((p) => {
@@ -78,6 +78,8 @@ function envFallback<T>(provider: Provider): T | null {
   switch (provider) {
     case "openai":
       return process.env.OPENAI_API_KEY ? ({ apiKey: process.env.OPENAI_API_KEY } as unknown as T) : null;
+    case "openrouter":
+      return process.env.OPENROUTER_API_KEY ? ({ apiKey: process.env.OPENROUTER_API_KEY } as unknown as T) : null;
     case "fergus":
       return process.env.FERGUS_API_KEY
         ? ({

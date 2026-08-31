@@ -1,10 +1,8 @@
 import { getDb } from "../db/connection.js";
 import { newId, nowIso } from "../lib/ids.js";
-import { getOpenAiClient } from "../integrations/openai.js";
+import { getActiveChatClient, chatJson } from "../integrations/llm.js";
 import { createAgentTask, updateAgentTask } from "../lib/agentTasks.js";
 import { recordAudit } from "../lib/audit.js";
-
-const MODEL = process.env.OPENAI_MODEL ?? "gpt-4o-mini";
 
 export function listOverdueInvoices() {
   const db = getDb();
@@ -48,9 +46,9 @@ export async function draftDebtorReminder(invoiceId: string): Promise<{ taskId: 
     .get(invoiceId) as any;
   if (!invoice) throw Object.assign(new Error("Invoice not found"), { code: "NOT_FOUND" });
 
-  const client = getOpenAiClient();
-  if (!client) {
-    throw Object.assign(new Error("OpenAI is not configured. Add an API key in Integrations first."), {
+  const chat = getActiveChatClient();
+  if (!chat) {
+    throw Object.assign(new Error("No AI provider is configured. Add an OpenAI or OpenRouter API key in Integrations first."), {
       code: "NOT_CONFIGURED",
     });
   }
@@ -65,9 +63,8 @@ export async function draftDebtorReminder(invoiceId: string): Promise<{ taskId: 
   });
 
   try {
-    const completion = await client.chat.completions.create({
-      model: MODEL,
-      response_format: { type: "json_schema", json_schema: REMINDER_SCHEMA },
+    const raw = await chatJson(chat, {
+      schema: REMINDER_SCHEMA,
       messages: [
         {
           role: "system",
@@ -91,7 +88,7 @@ export async function draftDebtorReminder(invoiceId: string): Promise<{ taskId: 
       ],
     });
 
-    const parsed = JSON.parse(completion.choices[0]?.message?.content ?? "{}") as { subject: string; body: string };
+    const parsed = JSON.parse(raw) as { subject: string; body: string };
     const now = nowIso();
     const reminderId = newId("reminder");
     db.prepare(

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../lib/api.js";
 import type { IntegrationSummary } from "../lib/types.js";
 
-const FIELD_MAP: Record<string, { key: string; label: string; secret?: boolean }[]> = {
+const FIELD_MAP: Record<string, { key: string; label: string; secret?: boolean; config?: boolean }[]> = {
   fergus: [
     { key: "apiKey", label: "Personal Access Token", secret: true },
     { key: "baseUrl", label: "Base URL (leave blank -- defaults to https://api.fergus.com)" },
@@ -12,6 +12,14 @@ const FIELD_MAP: Record<string, { key: string; label: string; secret?: boolean }
     { key: "clientSecret", label: "Client secret", secret: true },
   ],
   openai: [{ key: "apiKey", label: "API key", secret: true }],
+  openrouter: [
+    { key: "apiKey", label: "OpenRouter API key", secret: true },
+    {
+      key: "model",
+      label: "Hermes model slug (e.g. nousresearch/hermes-3-llama-3.1-405b) -- leave blank for the default. See openrouter.ai/models.",
+      config: true,
+    },
+  ],
   smtp: [
     { key: "host", label: "SMTP host" },
     { key: "port", label: "Port (e.g. 587)" },
@@ -28,6 +36,7 @@ const PROVIDER_LABEL: Record<string, string> = {
   fergus: "Fergus",
   xero: "Xero",
   openai: "OpenAI",
+  openrouter: "OpenRouter (Hermes)",
   smtp: "Email (SMTP)",
   google_places: "Google Places",
 };
@@ -38,9 +47,12 @@ export default function IntegrationsPage() {
   const [testResult, setTestResult] = useState<Record<string, string>>({});
   const [saveError, setSaveError] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
+  const [aiProvider, setAiProvider] = useState<"openai" | "openrouter" | null>(null);
+  const [aiProviderBusy, setAiProviderBusy] = useState(false);
 
   function load() {
     api.get<{ integrations: IntegrationSummary[] }>("/integrations").then((r) => setIntegrations(r.integrations));
+    api.get<{ provider: "openai" | "openrouter" }>("/integrations/ai-provider").then((r) => setAiProvider(r.provider));
   }
   useEffect(load, []);
 
@@ -48,12 +60,34 @@ export default function IntegrationsPage() {
     setBusy(provider);
     setSaveError((prev) => ({ ...prev, [provider]: "" }));
     try {
-      await api.put(`/integrations/${provider}`, { credentials: drafts[provider] ?? {} });
+      const fields = FIELD_MAP[provider] ?? [];
+      const values = drafts[provider] ?? {};
+      const credentials: Record<string, string> = {};
+      const config: Record<string, string> = {};
+      for (const f of fields) {
+        const v = values[f.key];
+        if (v === undefined) continue;
+        if (f.config) config[f.key] = v;
+        else credentials[f.key] = v;
+      }
+      await api.put(`/integrations/${provider}`, { credentials, config: Object.keys(config).length ? config : undefined });
       load();
     } catch (err: any) {
       setSaveError((prev) => ({ ...prev, [provider]: err.message ?? "Save failed" }));
     } finally {
       setBusy(null);
+    }
+  }
+
+  async function switchAiProvider(provider: "openai" | "openrouter") {
+    setAiProviderBusy(true);
+    try {
+      await api.put("/integrations/ai-provider", { provider });
+      setAiProvider(provider);
+    } catch (err: any) {
+      alert(`Couldn't switch AI provider: ${err.message}`);
+    } finally {
+      setAiProviderBusy(false);
     }
   }
 
@@ -96,6 +130,31 @@ export default function IntegrationsPage() {
       <div className="page-title">Integrations</div>
       <div className="page-sub">
         Credentials are encrypted server-side (AES-256-GCM) and never returned to the browser -- only a masked hint.
+      </div>
+
+      <div className="card" style={{ marginBottom: 20 }}>
+        <h3 style={{ marginTop: 0 }}>AI provider</h3>
+        <div className="page-sub" style={{ marginTop: -4 }}>
+          Every agent (Director, Operations, Estimator, Finance, Debtor, Lead Hunter, Research, Sales) makes its
+          calls through whichever provider is active here. Switching doesn't touch the other provider's saved key --
+          you can flip back any time.
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+          <button
+            className={aiProvider === "openai" ? "btn" : "btn btn-secondary"}
+            disabled={aiProviderBusy || aiProvider === "openai"}
+            onClick={() => switchAiProvider("openai")}
+          >
+            OpenAI
+          </button>
+          <button
+            className={aiProvider === "openrouter" ? "btn" : "btn btn-secondary"}
+            disabled={aiProviderBusy || aiProvider === "openrouter"}
+            onClick={() => switchAiProvider("openrouter")}
+          >
+            OpenRouter (Hermes)
+          </button>
+        </div>
       </div>
 
       <div className="integrations-grid">

@@ -1,10 +1,8 @@
 import { getDb } from "../db/connection.js";
 import { newId, nowIso } from "../lib/ids.js";
-import { getOpenAiClient } from "../integrations/openai.js";
+import { getActiveChatClient, chatJson } from "../integrations/llm.js";
 import { createAgentTask, updateAgentTask } from "../lib/agentTasks.js";
 import { recordAudit } from "../lib/audit.js";
-
-const MODEL = process.env.OPENAI_MODEL ?? "gpt-4o-mini";
 
 const RESPONSE_SCHEMA = {
   name: "outreach_draft",
@@ -32,9 +30,9 @@ export async function draftOutreach(leadId: string): Promise<{ taskId: string; o
   const lead = db.prepare("SELECT * FROM leads WHERE id = ?").get(leadId) as any;
   if (!lead) throw Object.assign(new Error("Lead not found"), { code: "NOT_FOUND" });
 
-  const client = getOpenAiClient();
-  if (!client) {
-    throw Object.assign(new Error("OpenAI is not configured. Add an API key in Integrations first."), {
+  const chat = getActiveChatClient();
+  if (!chat) {
+    throw Object.assign(new Error("No AI provider is configured. Add an OpenAI or OpenRouter API key in Integrations first."), {
       code: "NOT_CONFIGURED",
     });
   }
@@ -53,9 +51,8 @@ export async function draftOutreach(leadId: string): Promise<{ taskId: string; o
       .prepare("SELECT summary, notes FROM lead_research WHERE lead_id = ? ORDER BY created_at DESC LIMIT 1")
       .get(leadId) as { summary: string; notes: string } | undefined;
 
-    const completion = await client.chat.completions.create({
-      model: MODEL,
-      response_format: { type: "json_schema", json_schema: RESPONSE_SCHEMA },
+    const raw = await chatJson(chat, {
+      schema: RESPONSE_SCHEMA,
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
         {
@@ -70,7 +67,7 @@ export async function draftOutreach(leadId: string): Promise<{ taskId: string; o
       ],
     });
 
-    const parsed = JSON.parse(completion.choices[0]?.message?.content ?? "{}") as { subject: string; body: string };
+    const parsed = JSON.parse(raw) as { subject: string; body: string };
 
     const now = nowIso();
     const outreachId = newId("outreach");

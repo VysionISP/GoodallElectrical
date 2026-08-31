@@ -1,10 +1,8 @@
 import { getDb } from "../db/connection.js";
 import { newId, nowIso } from "../lib/ids.js";
-import { getOpenAiClient } from "../integrations/openai.js";
+import { getActiveChatClient, chatJson } from "../integrations/llm.js";
 import { createAgentTask, updateAgentTask } from "../lib/agentTasks.js";
 import { recordAudit } from "../lib/audit.js";
-
-const MODEL = process.env.OPENAI_MODEL ?? "gpt-4o-mini";
 
 const RESPONSE_SCHEMA = {
   name: "lead_research",
@@ -55,9 +53,9 @@ export async function runLeadResearch(leadId: string): Promise<{ taskId: string;
   const lead = db.prepare("SELECT * FROM leads WHERE id = ?").get(leadId) as any;
   if (!lead) throw Object.assign(new Error("Lead not found"), { code: "NOT_FOUND" });
 
-  const client = getOpenAiClient();
-  if (!client) {
-    throw Object.assign(new Error("OpenAI is not configured. Add an API key in Integrations first."), {
+  const chat = getActiveChatClient();
+  if (!chat) {
+    throw Object.assign(new Error("No AI provider is configured. Add an OpenAI or OpenRouter API key in Integrations first."), {
       code: "NOT_CONFIGURED",
     });
   }
@@ -77,9 +75,8 @@ export async function runLeadResearch(leadId: string): Promise<{ taskId: string;
       .prepare("SELECT content FROM business_memory WHERE active = 1 ORDER BY created_at DESC LIMIT 15")
       .all() as { content: string }[];
 
-    const completion = await client.chat.completions.create({
-      model: MODEL,
-      response_format: { type: "json_schema", json_schema: RESPONSE_SCHEMA },
+    const raw = await chatJson(chat, {
+      schema: RESPONSE_SCHEMA,
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
         {
@@ -95,7 +92,7 @@ export async function runLeadResearch(leadId: string): Promise<{ taskId: string;
       ],
     });
 
-    const parsed = JSON.parse(completion.choices[0]?.message?.content ?? "{}") as {
+    const parsed = JSON.parse(raw) as {
       suitable: boolean;
       leadScore: number;
       reason: string;

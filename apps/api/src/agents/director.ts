@@ -1,12 +1,10 @@
 import { getDb } from "../db/connection.js";
 import { newId, nowIso } from "../lib/ids.js";
-import { getOpenAiClient } from "../integrations/openai.js";
+import { getActiveChatClient, chatJson } from "../integrations/llm.js";
 import { buildDirectorContext, findJobByNumber } from "./directorContext.js";
 import { recordAudit } from "../lib/audit.js";
 import { createNotification } from "../lib/notifications.js";
 import { createAgentTask, updateAgentTask } from "../lib/agentTasks.js";
-
-const MODEL = process.env.OPENAI_MODEL ?? "gpt-4o-mini";
 
 const RESPONSE_SCHEMA = {
   name: "director_response",
@@ -114,10 +112,10 @@ export async function runDirectorTurn(ownerMessage: string): Promise<DirectorTur
     `INSERT INTO director_messages (id, role, content, created_at) VALUES (?, 'owner', ?, ?)`
   ).run(ownerMessageId, ownerMessage, now);
 
-  const client = getOpenAiClient();
-  if (!client) {
+  const chat = getActiveChatClient();
+  if (!chat) {
     const reply =
-      "OpenAI isn't configured yet, so I can't think this through. Add an API key under Integrations and I'll be able to respond.";
+      "Neither OpenAI nor OpenRouter is configured yet, so I can't think this through. Add an API key under Integrations and I'll be able to respond.";
     const directorMessageId = newId("dmsg");
     db.prepare(
       `INSERT INTO director_messages (id, role, content, created_at) VALUES (?, 'director', ?, ?)`
@@ -133,9 +131,8 @@ export async function runDirectorTurn(ownerMessage: string): Promise<DirectorTur
       .prepare("SELECT role, content FROM director_messages ORDER BY created_at DESC LIMIT 20")
       .all() as { role: string; content: string }[];
 
-    const completion = await client.chat.completions.create({
-      model: MODEL,
-      response_format: { type: "json_schema", json_schema: RESPONSE_SCHEMA },
+    const raw = await chatJson(chat, {
+      schema: RESPONSE_SCHEMA,
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
         { role: "system", content: `Current business context (from our own database):\n${JSON.stringify(context, null, 2)}` },
@@ -146,7 +143,6 @@ export async function runDirectorTurn(ownerMessage: string): Promise<DirectorTur
       ],
     });
 
-    const raw = completion.choices[0]?.message?.content ?? "{}";
     const parsed = JSON.parse(raw) as {
       reply: string;
       jobUpdates: { jobNumber: string; key: string; value: string; confidence: number }[];

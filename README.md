@@ -197,6 +197,74 @@ name involved:
   deployment; closing the laptop stops it, same as any other server process
   that isn't hosted somewhere that stays up.
 
+## Hermes models via OpenRouter, as a second AI provider
+
+Direct request: run the agents on NousResearch's Hermes models instead of (or
+alongside) OpenAI. OpenAI itself doesn't host Hermes, so this reaches it
+through [OpenRouter](https://openrouter.ai), which exposes an OpenAI-compatible
+API OpenRouter also hosts other providers (Together AI, Fireworks) the same
+way, but OpenRouter needed the least new code since this app already speaks
+the OpenAI SDK's request shape.
+
+- **Added alongside OpenAI, not instead of it** -- both stay configured
+  independently under Integrations, and a single "AI provider" switch there
+  (`GET`/`PUT /api/integrations/ai-provider`, backed by a new `app_settings`
+  table) decides which one every agent's calls actually go through: Director,
+  Operations, Estimator, Finance, Debtor, Lead Hunter, Research, and Sales all
+  read the same switch (`getActiveChatClient()` in `apps/api/src/integrations/llm.ts`),
+  so flipping it changes all of them at once rather than needing per-agent
+  configuration. Flipping back to OpenAI is instant and doesn't touch the
+  OpenRouter key you saved.
+- **Real, open concern, flagged rather than hidden**: this app's entire
+  "never fabricate" guarantee rests on OpenAI's strict `json_schema` structured
+  outputs mode -- every agent depends on the model returning exactly the shape
+  asked for, or not returning at all. Whether every Hermes model on OpenRouter
+  honours that mode the same way OpenAI does was **not verifiable from this
+  build environment** -- outbound network access to openrouter.ai is blocked
+  here, so this could not be tested against the real service with a real key.
+  Built defensively instead of assuming it works:
+  - `chatJson()` in `llm.ts` requests strict `json_schema` mode first. If the
+    active provider is OpenAI, a failure there is treated as a real error, same
+    as before this change -- nothing about the OpenAI path changed behaviorally.
+  - For any other provider, a rejected strict-mode request falls back once to
+    plain `json_object` mode with the schema spelled out in the prompt text,
+    strips a markdown code fence if the model wrapped its answer in one, then
+    checks every field the schema marks `required` actually came back before
+    trusting the result. If a field is missing, it throws with a clear message
+    naming the provider, model, and missing field(s) -- it does not hand the
+    caller a partially-fabricated object.
+  - **Verified with real HTTP round-trips against local fake OpenAI-compatible
+    servers standing in for OpenRouter** (since a real key/live test wasn't
+    available here): one server rejects strict `json_schema` with a 400 and
+    accepts `json_object`, confirming the fallback actually fires and returns
+    correct data; a second returns well-formed JSON that's missing the
+    required field, confirming `chatJson` throws instead of silently accepting
+    it; a third mimics real OpenAI's strict-mode success to confirm that path
+    is unchanged. **What's still unverified**: whether real Hermes models
+    served by OpenRouter behave like either fake server, or something else
+    entirely (e.g. an error shape this fallback doesn't recognize) -- that
+    needs a real OpenRouter API key and a real test, which whoever deploys
+    this should do before relying on it for real business data.
+- **A real bug was caught and fixed while wiring the `/api/integrations/ai-provider`
+  route**: Express matches routes in registration order, and the existing
+  generic `PUT /:provider` route (used for saving any integration's
+  credentials) was registered before the new `/ai-provider` route, so it
+  swallowed requests to `/ai-provider` and rejected them as an unknown
+  provider named "ai-provider". Caught by an actual `curl` smoke test against
+  the running server, not by reading the code -- fixed by moving the specific
+  route above the generic one.
+- **The `integrations.provider` CHECK constraint had to be widened** to accept
+  `'openrouter'`; SQLite can't `ALTER` a `CHECK` constraint directly, so
+  migration `011_openrouter_and_settings.sql` rebuilds the table (copy into a
+  new table, drop the old one, rename). Checked first that nothing has a
+  foreign key referencing `integrations(id)` -- unlike the documented
+  near-miss with `approvals`/`approval_events`, there's no cascade-delete risk
+  here. Verified against a database seeded to look like a real pre-existing
+  deployment (migrations 001-010 applied, a real encrypted OpenAI credential
+  row already saved) that the row survives the rebuild byte-for-byte, and that
+  the `CHECK` constraint is still actually enforced afterward (an invalid
+  provider name is still rejected), not silently dropped.
+
 ## The Director now runs unprompted, not just when you message it
 
 Two real gaps, both from direct feedback: the owner shouldn't have to visit a

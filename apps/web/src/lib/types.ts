@@ -86,7 +86,7 @@ export interface Approval {
 }
 
 export interface IntegrationSummary {
-  provider: "fergus" | "xero" | "openai" | "smtp" | "google_places";
+  provider: "fergus" | "xero" | "openai" | "openrouter" | "smtp" | "google_places";
   status: "not_configured" | "connected" | "error";
   credentialHint: string | null;
   lastSyncAt: string | null;

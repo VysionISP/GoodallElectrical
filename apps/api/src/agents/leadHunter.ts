@@ -4,10 +4,8 @@ import { createAgentTask, updateAgentTask, logAgentEvent } from "../lib/agentTas
 import { createNotification } from "../lib/notifications.js";
 import { recordAudit } from "../lib/audit.js";
 import { getIntegrationCredentials } from "../integrations/store.js";
-import { getOpenAiClient } from "../integrations/openai.js";
+import { getActiveChatClient, chatJson } from "../integrations/llm.js";
 import { searchTextRaw, mapPlace, isLikelyBusiness, isCompetitor, type GooglePlacesCredentials } from "../integrations/googlePlaces.js";
-
-const MODEL = process.env.OPENAI_MODEL ?? "gpt-4o-mini";
 
 function requireGooglePlacesCreds(): GooglePlacesCredentials {
   const creds = getIntegrationCredentials<GooglePlacesCredentials>("google_places");
@@ -119,9 +117,9 @@ const SUGGEST_SCHEMA = {
  * location if none has been recorded (asks for one instead).
  */
 export async function suggestSearchQueries(): Promise<string[]> {
-  const client = getOpenAiClient();
-  if (!client) {
-    throw Object.assign(new Error("OpenAI is not configured. Add an API key in Integrations first."), {
+  const chat = getActiveChatClient();
+  if (!chat) {
+    throw Object.assign(new Error("No AI provider is configured. Add an OpenAI or OpenRouter API key in Integrations first."), {
       code: "NOT_CONFIGURED",
     });
   }
@@ -141,9 +139,8 @@ export async function suggestSearchQueries(): Promise<string[]> {
     );
   }
 
-  const completion = await client.chat.completions.create({
-    model: MODEL,
-    response_format: { type: "json_schema", json_schema: SUGGEST_SCHEMA },
+  const raw = await chatJson(chat, {
+    schema: SUGGEST_SCHEMA,
     messages: [
       {
         role: "system",
@@ -167,7 +164,7 @@ export async function suggestSearchQueries(): Promise<string[]> {
     ],
   });
 
-  const parsed = JSON.parse(completion.choices[0]?.message?.content ?? "{}") as { queries: string[] };
+  const parsed = JSON.parse(raw) as { queries: string[] };
   return parsed.queries ?? [];
 }
 

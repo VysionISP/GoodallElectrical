@@ -1,7 +1,5 @@
 import { getDb } from "../db/connection.js";
-import { getOpenAiClient } from "../integrations/openai.js";
-
-const MODEL = process.env.OPENAI_MODEL ?? "gpt-4o-mini";
+import { getActiveChatClient, chatJson } from "../integrations/llm.js";
 
 /**
  * The facts that actually drive a labour estimate, matching the
@@ -79,14 +77,13 @@ export async function computeLabourForecast(jobId: string): Promise<LabourForeca
 
   const confidence = Math.round((known.length / LABOUR_DRIVING_FACTS.length) * 100);
 
-  const client = getOpenAiClient();
-  if (!client) {
+  const chat = getActiveChatClient();
+  if (!chat) {
     return { jobId, confidence, known, missing, expectedHoursLow: null, expectedHoursHigh: null, reasoning: null };
   }
 
-  const completion = await client.chat.completions.create({
-    model: MODEL,
-    response_format: { type: "json_schema", json_schema: HOURS_SCHEMA },
+  const raw = await chatJson(chat, {
+    schema: HOURS_SCHEMA,
     messages: [
       {
         role: "system",
@@ -109,7 +106,7 @@ export async function computeLabourForecast(jobId: string): Promise<LabourForeca
     ],
   });
 
-  const parsed = JSON.parse(completion.choices[0]?.message?.content ?? "{}") as {
+  const parsed = JSON.parse(raw) as {
     expectedHoursLow: number;
     expectedHoursHigh: number;
     reasoning: string;

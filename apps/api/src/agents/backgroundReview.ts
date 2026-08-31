@@ -2,10 +2,9 @@ import { getDb } from "../db/connection.js";
 import { newId, nowIso } from "../lib/ids.js";
 import { createAgentTask, updateAgentTask, logAgentEvent, type AgentName } from "../lib/agentTasks.js";
 import { createNotification } from "../lib/notifications.js";
-import { getOpenAiClient } from "../integrations/openai.js";
+import { getActiveChatClient, chatJson } from "../integrations/llm.js";
 import { recordAudit } from "../lib/audit.js";
 
-const MODEL = process.env.OPENAI_MODEL ?? "gpt-4o-mini";
 const MAX_JOBS_PER_CYCLE = 5;
 // A person wouldn't keep asking you new things while a dozen questions
 // already sit unanswered -- back off once the owner is clearly behind, and
@@ -79,12 +78,11 @@ const JOB_REVIEW_SCHEMA = {
 /** Consolidates everything missing about a job into ONE question, the way a person would actually ask about it -- not one card per fact. */
 async function reviewJob(taskId: string, job: any): Promise<RaisedItem | null> {
   const db = getDb();
-  const client = getOpenAiClient();
-  if (!client) return null; // no LLM available -- leave the job unreviewed rather than asking nothing intelligently
+  const chat = getActiveChatClient();
+  if (!chat) return null; // no LLM available -- leave the job unreviewed rather than asking nothing intelligently
 
-  const completion = await client.chat.completions.create({
-    model: MODEL,
-    response_format: { type: "json_schema", json_schema: JOB_REVIEW_SCHEMA },
+  const raw = await chatJson(chat, {
+    schema: JOB_REVIEW_SCHEMA,
     messages: [
       {
         role: "system",
@@ -108,7 +106,7 @@ async function reviewJob(taskId: string, job: any): Promise<RaisedItem | null> {
     ],
   });
 
-  const parsed = JSON.parse(completion.choices[0]?.message?.content ?? "{}") as {
+  const parsed = JSON.parse(raw) as {
     needsInput: boolean;
     question: string;
   };
@@ -173,10 +171,10 @@ async function postProactiveBriefing(raised: RaisedItem[], jobsReviewed: number)
     .prepare("SELECT COALESCE(SUM(amount_due), 0) as total FROM invoices WHERE status = 'overdue'")
     .get() as { total: number };
 
-  const client = getOpenAiClient();
+  const chat = getActiveChatClient();
   let message: string;
 
-  if (!client) {
+  if (!chat) {
     // No LLM available -- still speak up, just without the natural-language polish.
     const lines = raised.map((r) => `- ${r.label}: ${r.question}`);
     message =
@@ -184,9 +182,8 @@ async function postProactiveBriefing(raised: RaisedItem[], jobsReviewed: number)
       `${raised.length} thing${raised.length === 1 ? "" : "s"} need your input:\n${lines.join("\n")}`;
   } else {
     try {
-      const completion = await client.chat.completions.create({
-        model: MODEL,
-        response_format: { type: "json_schema", json_schema: BRIEFING_SCHEMA },
+      const raw = await chatJson(chat, {
+        schema: BRIEFING_SCHEMA,
         messages: [
           {
             role: "system",
@@ -206,7 +203,7 @@ async function postProactiveBriefing(raised: RaisedItem[], jobsReviewed: number)
           },
         ],
       });
-      const parsed = JSON.parse(completion.choices[0]?.message?.content ?? "{}") as { message: string };
+      const parsed = JSON.parse(raw) as { message: string };
       message = parsed.message?.trim() || `I found ${raised.length} thing${raised.length === 1 ? "" : "s"} that need your input after reviewing the business.`;
     } catch (err: any) {
       logAgentEvent({ agent: "director", eventType: "briefing_compose_failed", message: err?.message ?? String(err) });
@@ -278,15 +275,14 @@ async function maybePostSpontaneousCheckin(): Promise<boolean> {
 
   const stats = { activeJobs: activeJobs.c, openQuotes: openQuotes.c, overdueReceivables: overdueTotal.total, openQuestions: openQuestions.c };
 
-  const client = getOpenAiClient();
+  const chat = getActiveChatClient();
   let message: string;
-  if (!client) {
+  if (!chat) {
     message = `Just checking in -- ${stats.activeJobs} active job(s), ${stats.openQuotes} quote(s) in play, nothing urgent from me right now.`;
   } else {
     try {
-      const completion = await client.chat.completions.create({
-        model: MODEL,
-        response_format: { type: "json_schema", json_schema: CHECKIN_SCHEMA },
+      const raw = await chatJson(chat, {
+        schema: CHECKIN_SCHEMA,
         messages: [
           {
             role: "system",
@@ -298,7 +294,7 @@ async function maybePostSpontaneousCheckin(): Promise<boolean> {
           { role: "user", content: JSON.stringify(stats) },
         ],
       });
-      const parsed = JSON.parse(completion.choices[0]?.message?.content ?? "{}") as { message: string };
+      const parsed = JSON.parse(raw) as { message: string };
       message = parsed.message?.trim() || `Just checking in -- ${stats.activeJobs} active job(s), nothing urgent right now.`;
     } catch (err: any) {
       logAgentEvent({ agent: "director", eventType: "checkin_compose_failed", message: err?.message ?? String(err) });
