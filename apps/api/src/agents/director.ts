@@ -39,10 +39,13 @@ const RESPONSE_SCHEMA = {
           type: "object",
           additionalProperties: false,
           properties: {
-            jobNumber: { type: "string" },
+            jobNumber: {
+              type: ["string", "null"],
+              description: "The job number this question relates to, e.g. ELEC-3256, or null if it's not job-specific.",
+            },
             question: { type: "string" },
           },
-          required: ["question"],
+          required: ["jobNumber", "question"],
         },
       },
     },
@@ -113,7 +116,7 @@ export async function runDirectorTurn(ownerMessage: string): Promise<DirectorTur
     const parsed = JSON.parse(raw) as {
       reply: string;
       jobUpdates: { jobNumber: string; key: string; value: string; confidence: number }[];
-      newQuestions: { jobNumber?: string; question: string }[];
+      newQuestions: { jobNumber: string | null; question: string }[];
     };
 
     let applied = 0;
