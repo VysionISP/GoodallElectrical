@@ -2,6 +2,7 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import { runMigrations } from "./db/migrate.js";
+import { getDb } from "./db/connection.js";
 
 import integrationsRouter from "./routes/integrations.js";
 import jobsRouter from "./routes/jobs.js";
@@ -22,6 +23,28 @@ if (migrationResult.applied.length > 0) {
   console.log(`[db] applied migrations: ${migrationResult.applied.join(", ")}`);
 }
 console.log(`[db] ${migrationResult.alreadyCurrent.length} migration(s) already current`);
+
+// Any agent_task still 'running'/'queued' from before this process started
+// cannot possibly still be making progress -- the code that would advance
+// it is gone. Left alone these render as a worker permanently frozen mid-
+// task in the HQ. We don't know what actually happened to it, so mark it
+// failed with an honest reason rather than leaving it stuck or deleting it.
+{
+  const db = getDb();
+  const orphaned = db
+    .prepare("SELECT id FROM agent_tasks WHERE status IN ('running', 'queued')")
+    .all() as { id: string }[];
+  if (orphaned.length > 0) {
+    const now = new Date().toISOString();
+    const markFailed = db.prepare(
+      "UPDATE agent_tasks SET status = 'failed', error = ?, finished_at = ?, updated_at = ? WHERE id = ?"
+    );
+    for (const task of orphaned) {
+      markFailed.run("Interrupted by an API server restart before this task finished.", now, now, task.id);
+    }
+    console.log(`[api] marked ${orphaned.length} orphaned agent_task(s) from a previous run as failed`);
+  }
+}
 
 if (!process.env.CREDENTIAL_ENCRYPTION_KEY) {
   console.warn(

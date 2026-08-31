@@ -69,14 +69,31 @@ function baseUrl(creds: FergusCredentials): string {
   return creds.baseUrl?.replace(/\/$/, "") || "https://api.fergus.com";
 }
 
+const REQUEST_TIMEOUT_MS = 20_000;
+
 async function fergusFetch(creds: FergusCredentials, path: string, retrying = false): Promise<any> {
   const url = `${baseUrl(creds)}${path}`;
-  const res = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${creds.apiKey}`,
-      Accept: "application/json",
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${creds.apiKey}`,
+        Accept: "application/json",
+      },
+      // Without this, a hung connection to Fergus leaves the whole sync
+      // loop frozen on one job forever -- the caller never gets a
+      // rejection to catch, so the agent_task's "Reviewing X" message
+      // never advances. Every per-job call site already tolerates a
+      // thrown error (see fergusSync.ts), so timing out here lets the
+      // sync continue past a bad request instead of hanging indefinitely.
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+  } catch (err: any) {
+    if (err?.name === "TimeoutError" || err?.name === "AbortError") {
+      throw new Error(`Fergus API request to ${path} timed out after ${REQUEST_TIMEOUT_MS / 1000}s`);
+    }
+    throw err;
+  }
 
   if (res.status === 429 && !retrying) {
     const retryAfterSeconds = Math.min(Number(res.headers.get("retry-after")) || 2, 10);
