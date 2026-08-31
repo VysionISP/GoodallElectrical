@@ -156,6 +156,47 @@ administrative/geographic (locality, postal_code, route, etc.). A second filter,
 `isCompetitor()`, excludes results Google itself types as `electrician` -- a lead
 search should find customers, not other electrical contractors.
 
+## How the AI actually works
+
+Asked directly: does it call ChatGPT via the API, and are there multiple agents
+running in the background with their own memory? Honest answer, no framework
+name involved:
+
+- **Yes, it's the real OpenAI API** (`openai` npm package,
+  `apps/api/src/integrations/openai.ts`), the same underlying models behind
+  ChatGPT, called over HTTPS with the API key you enter under Integrations.
+  Every "AI" response in this app -- Director replies, background reviews,
+  labour forecasts, lead research, quote drafting -- is a direct
+  `client.chat.completions.create()` call from the Node/Express backend. There
+  is no separate AI service, no LangChain/AutoGPT-style framework, no
+  "Hermes" -- just HTTP requests this server makes.
+- **There is one backend process, not multiple running agents.** "Director",
+  "Operations AI", "Estimator AI", "Finance AI", "Debtor AI", "Lead Hunter",
+  "Research AI", "Sales AI" are names for different TypeScript functions with
+  different system prompts and different jobs (`apps/api/src/agents/*.ts`) --
+  not separate processes, containers, or long-running loops each with their
+  own state. They only run when something calls them: an HTTP request from
+  the frontend, or the one background timer in `index.ts`.
+- **No agent has its own persistent memory or "skills" in the autonomous-agent
+  sense.** Every OpenAI call is stateless -- it has no memory of the previous
+  call at all. What makes responses feel informed is that before each call,
+  the backend builds a fresh JSON snapshot of real data from SQLite
+  (`buildDirectorContext()` in `directorContext.ts`: active jobs, open quotes,
+  overdue receivables, business_memory, cashflow forecast, recent chat
+  history) and stuffs it into that one request's prompt. The database --
+  `business_memory`, `job_context`, `director_messages`, `ai_questions` -- is
+  the actual memory. The model itself remembers nothing between requests.
+  "Skills" are just which system prompt and which DB tables a given function
+  reads and writes.
+- **The only thing that runs unprompted, without the owner opening the app,**
+  is the `setInterval` in `apps/api/src/index.ts` calling
+  `runBackgroundReview()` every 30 minutes (plus once 10 seconds after
+  startup). That function is what raises new questions, posts proactive
+  briefings, and now posts spontaneous check-ins (below). It only runs while
+  this one Node process is alive -- `npm run dev` on a laptop is not a 24/7
+  deployment; closing the laptop stops it, same as any other server process
+  that isn't hosted somewhere that stays up.
+
 ## The Director now runs unprompted, not just when you message it
 
 Two real gaps, both from direct feedback: the owner shouldn't have to visit a
@@ -200,6 +241,22 @@ ever running unless the owner sent a chat message first.
   question, an immediate second run with nothing new raises zero questions and
   posts zero additional messages. Without an OpenAI key configured it still
   speaks up with a plainer templated version rather than staying silent.
+- **It now also speaks up for no reason at all -- "we want it to just start
+  randomly talking to us"** (`maybePostSpontaneousCheckin()` in
+  `backgroundReview.ts`). On a cycle where nothing needs the owner's input, it
+  has a 40% chance of posting a short, casual "just checking in" message
+  (real numbers only -- active jobs, open quotes -- never invented), gated so
+  it can't fire again until at least 90 minutes since the last thing it said
+  of any kind. The combination of a floor plus a coin flip each eligible
+  cycle is deliberate: a fixed timer would feel scheduled, not alive.
+  Verified by running the background pass in a tight loop against a real
+  seeded DB: over 30 rapid cycles (no time actually elapsed) it spoke exactly
+  once, then the 90-minute floor correctly blocked every further attempt;
+  backdating the last message past the floor and re-running let it speak
+  again, landing at 7/15 (~47%), consistent with the 40% target. No OpenAI
+  key configured still gets a plain templated check-in rather than silence;
+  if composing the message fails, it skips that cycle rather than forcing a
+  generic fallback into the chat.
 
 ## Financial planning (Finance AI, Estimator AI, Debtor AI)
 

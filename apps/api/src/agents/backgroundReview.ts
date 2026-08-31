@@ -11,6 +11,13 @@ const MAX_JOBS_PER_CYCLE = 5;
 // already sit unanswered -- back off once the owner is clearly behind, and
 // let them catch up before piling on more.
 const MAX_OPEN_JOB_QUESTIONS = 6;
+// A real operations manager doesn't only speak up when something's wrong --
+// they also just pop in every so often with "how's it going" style chatter.
+// Floor + a coin flip each cycle (rather than a fixed timer) is what makes
+// it feel like it's actually happening on its own instead of on a schedule
+// the owner can set a watch to.
+const MIN_CHECKIN_GAP_MS = 90 * 60 * 1000;
+const CHECKIN_CHANCE = 0.4;
 
 /** One thing the background pass found this cycle that's worth mentioning in the proactive briefing. */
 interface RaisedItem {
@@ -215,6 +222,95 @@ async function postProactiveBriefing(raised: RaisedItem[], jobsReviewed: number)
   );
 }
 
+const CHECKIN_SCHEMA = {
+  name: "director_checkin",
+  strict: true,
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      message: {
+        type: "string",
+        description:
+          "One short, casual first-person message from the Director just checking in with the owner -- nothing is " +
+          "wrong and nothing needs a reply. The kind of thing a good operations manager says walking past your desk: " +
+          "a quick real number or two for context (only from what's given -- never invent one), maybe what you're " +
+          "keeping an eye on. Not a report, not a list, not a greeting like 'Hi' on its own. Keep it to 1-3 sentences.",
+      },
+    },
+    required: ["message"],
+  },
+} as const;
+
+/**
+ * Speaks up in the chat even when nothing needs the owner's input -- the
+ * fix for "we want it to just start randomly talking to us". Without this,
+ * the Director was only ever heard from when it had a problem or a question,
+ * which isn't how a real operations manager behaves; they also just check in.
+ * Gated by MIN_CHECKIN_GAP_MS since the last thing the Director said (of
+ * any kind -- a briefing counts) plus a random roll each eligible cycle, so
+ * it can't fire every 30-minute cycle and doesn't land on a predictable
+ * schedule either. Only called on a cycle that already found nothing worth
+ * raising (see runBackgroundReview) -- a real briefing always takes priority
+ * over small talk.
+ */
+async function maybePostSpontaneousCheckin(): Promise<boolean> {
+  const db = getDb();
+  const last = db.prepare("SELECT created_at FROM director_messages WHERE role = 'director' ORDER BY created_at DESC LIMIT 1").get() as
+    | { created_at: string }
+    | undefined;
+  if (last) {
+    const elapsed = Date.now() - new Date(last.created_at).getTime();
+    if (elapsed < MIN_CHECKIN_GAP_MS) return false;
+  }
+  if (Math.random() >= CHECKIN_CHANCE) return false;
+
+  const activeJobs = db
+    .prepare("SELECT COUNT(*) as c FROM jobs WHERE status IS NULL OR status NOT IN ('completed', 'cancelled', 'Completed', 'Inactive')")
+    .get() as { c: number };
+  const openQuotes = db
+    .prepare("SELECT COUNT(*) as c FROM quotes WHERE status IN ('draft', 'pending_approval', 'approved', 'sent')")
+    .get() as { c: number };
+  const overdueTotal = db
+    .prepare("SELECT COALESCE(SUM(amount_due), 0) as total FROM invoices WHERE status = 'overdue'")
+    .get() as { total: number };
+  const openQuestions = db.prepare("SELECT COUNT(*) as c FROM ai_questions WHERE status = 'open'").get() as { c: number };
+
+  const stats = { activeJobs: activeJobs.c, openQuotes: openQuotes.c, overdueReceivables: overdueTotal.total, openQuestions: openQuestions.c };
+
+  const client = getOpenAiClient();
+  let message: string;
+  if (!client) {
+    message = `Just checking in -- ${stats.activeJobs} active job(s), ${stats.openQuotes} quote(s) in play, nothing urgent from me right now.`;
+  } else {
+    try {
+      const completion = await client.chat.completions.create({
+        model: MODEL,
+        response_format: { type: "json_schema", json_schema: CHECKIN_SCHEMA },
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are the AI Director for Goodall Electrical, an electrical contracting company. Nothing is wrong " +
+              "and there's no open question -- you're just checking in with the owner unprompted, the way a real " +
+              "operations manager does sometimes, not because something needs them.",
+          },
+          { role: "user", content: JSON.stringify(stats) },
+        ],
+      });
+      const parsed = JSON.parse(completion.choices[0]?.message?.content ?? "{}") as { message: string };
+      message = parsed.message?.trim() || `Just checking in -- ${stats.activeJobs} active job(s), nothing urgent right now.`;
+    } catch (err: any) {
+      logAgentEvent({ agent: "director", eventType: "checkin_compose_failed", message: err?.message ?? String(err) });
+      return false; // a failed casual check-in isn't worth a fallback template -- just skip it, there's always next cycle
+    }
+  }
+
+  db.prepare(`INSERT INTO director_messages (id, role, content, created_at) VALUES (?, 'director', ?, ?)`).run(newId("dmsg"), message, nowIso());
+  createNotification({ type: "director_checkin", severity: "info", title: "Director checked in", message });
+  return true;
+}
+
 /**
  * The Director's unprompted background pass -- runs on server startup and
  * on a recurring interval (see index.ts), not just when the owner sends a
@@ -287,6 +383,7 @@ export async function runBackgroundReview(): Promise<{ taskId: string; questions
       }
     }
 
+    let spokeUp = false;
     if (questionsRaised > 0) {
       createNotification({
         type: "director_needs_info",
@@ -299,8 +396,18 @@ export async function runBackgroundReview(): Promise<{ taskId: string; questions
       // background rather than just reacting when the owner opens the app.
       try {
         await postProactiveBriefing(raisedItems, jobsReviewed);
+        spokeUp = true;
       } catch (err: any) {
         logAgentEvent({ taskId, agent: "director", eventType: "briefing_post_failed", message: err?.message ?? String(err) });
+      }
+    } else {
+      // Nothing needs the owner -- still worth speaking up sometimes, the
+      // way a person would, rather than only ever being heard from when
+      // there's a problem.
+      try {
+        spokeUp = await maybePostSpontaneousCheckin();
+      } catch (err: any) {
+        logAgentEvent({ taskId, agent: "director", eventType: "checkin_post_failed", message: err?.message ?? String(err) });
       }
     }
 
@@ -308,7 +415,7 @@ export async function runBackgroundReview(): Promise<{ taskId: string; questions
       status: "completed",
       progress: 100,
       room: "director",
-      message: questionsRaised > 0 ? `Raised ${questionsRaised} question(s)` : "Nothing new to ask",
+      message: questionsRaised > 0 ? `Raised ${questionsRaised} question(s)` : spokeUp ? "Checked in with you" : "Nothing new to ask",
     });
     recordAudit({ actor: "director", action: "background_review_completed", details: { questionsRaised, jobsReviewed } });
     return { taskId, questionsRaised, jobsReviewed };
