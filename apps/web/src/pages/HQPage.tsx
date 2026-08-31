@@ -1,17 +1,27 @@
 import { useEffect, useState } from "react";
 import RoomMap from "../components/RoomMap.js";
 import { api } from "../lib/api.js";
-import type { Approval, JobListItem, Notification } from "../lib/types.js";
+import type { AgentTask, Approval, JobListItem, Notification } from "../lib/types.js";
 
 export default function HQPage() {
   const [jobs, setJobs] = useState<JobListItem[]>([]);
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [tasks, setTasks] = useState<AgentTask[] | null>(null);
 
   useEffect(() => {
     api.get<{ jobs: JobListItem[] }>("/jobs").then((r) => setJobs(r.jobs)).catch(() => {});
     api.get<{ approvals: Approval[] }>("/approvals?status=pending").then((r) => setApprovals(r.approvals)).catch(() => {});
     api.get<{ notifications: Notification[] }>("/notifications?unread=true").then((r) => setNotifications(r.notifications)).catch(() => {});
+
+    // An idle map is ambiguous: it looks identical whether the agents are
+    // between jobs or switched off entirely (no API key). Say which.
+    function loadTasks() {
+      api.get<{ tasks: AgentTask[] }>("/agent-tasks").then((r) => setTasks(r.tasks)).catch(() => {});
+    }
+    loadTasks();
+    const interval = setInterval(loadTasks, 5000);
+    return () => clearInterval(interval);
   }, []);
 
   const activeJobs = jobs.filter((j) => j.status && !["completed", "cancelled"].includes(j.status)).length;
@@ -25,6 +35,8 @@ export default function HQPage() {
         simulated.
       </div>
 
+      <ActivityBanner tasks={tasks} />
+
       <div className="hq-grid">
         <div className="hq-stats">
           <StatCard label="Active jobs" value={jobs.length ? String(activeJobs) : "—"} />
@@ -35,6 +47,45 @@ export default function HQPage() {
 
         <RoomMap />
       </div>
+    </div>
+  );
+}
+
+/**
+ * A still map means one of two very different things -- agents idle between
+ * jobs, or no agent has ever run because there's no API key. Distinguishing
+ * them from real rows saves staring at a floor plan wondering which.
+ */
+function ActivityBanner({ tasks }: { tasks: AgentTask[] | null }) {
+  if (tasks === null) return null;
+
+  if (tasks.length === 0) {
+    return (
+      <div className="card" style={{ marginBottom: 16 }}>
+        <strong>No agent has run yet.</strong>{" "}
+        <span style={{ color: "var(--text-dim)" }}>
+          Nothing will move here until one does. Most often that means no AI provider key is saved -- check
+          Integrations. Talking to the Director, or running a Fergus sync, also puts a worker on the map.
+        </span>
+      </div>
+    );
+  }
+
+  const running = tasks.filter((t) => t.status === "running" || t.status === "queued" || t.status === "waiting");
+  const newest = tasks[0];
+  const lastAt = newest.finished_at ?? newest.updated_at;
+  const minutesAgo = lastAt ? Math.round((Date.now() - new Date(lastAt).getTime()) / 60000) : null;
+
+  return (
+    <div className="card" style={{ marginBottom: 16, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+      <span className={`pill ${running.length > 0 ? "pill-info" : "pill-muted"}`}>
+        {running.length > 0 ? `${running.length} working now` : "All idle"}
+      </span>
+      <span style={{ color: "var(--text-dim)", fontSize: 13 }}>
+        Last activity: {newest.agent} · {newest.task_type}
+        {minutesAgo !== null && ` · ${minutesAgo < 1 ? "just now" : `${minutesAgo} min ago`}`}
+        {newest.message ? ` — ${newest.message}` : ""}
+      </span>
     </div>
   );
 }

@@ -70,9 +70,23 @@ export const AGENT_SLOT_OFFSET: Record<AgentName, { dx: number; dy: number }> = 
   return offsets;
 })();
 
-/** The point an agent should rest at once it arrives in `room`, offset so co-located agents don't overlap. */
-export function agentRoomPosition(agent: AgentName, room: Room) {
+/**
+ * The point an agent should rest at once it arrives in `room`, offset so
+ * co-located agents don't overlap.
+ *
+ * Pass `slot` with the room's live occupancy. The fixed per-agent offsets
+ * below are derived from each agent's HOME room, so a visitor -- the
+ * Director reviewing in the Jobs Floor, say -- carried its home offset into
+ * a room it doesn't live in and landed on top of a resident, printing
+ * labels over each other. Slots computed from who is actually standing in
+ * the room can't collide that way.
+ */
+export function agentRoomPosition(agent: AgentName, room: Room, slot?: { index: number; total: number }) {
   const center = roomCenter(roomByKey(room));
+  if (slot && slot.total > 1) {
+    return { x: center.x + (slot.index - (slot.total - 1) / 2) * 62, y: center.y + 8 };
+  }
+  if (slot && slot.total === 1) return { x: center.x, y: center.y + 8 };
   const offset = AGENT_SLOT_OFFSET[agent] ?? { dx: 0, dy: 0 };
   return { x: center.x + offset.dx, y: center.y + offset.dy };
 }

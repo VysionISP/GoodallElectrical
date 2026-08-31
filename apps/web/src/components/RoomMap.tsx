@@ -26,6 +26,35 @@ const AGENT_LABEL: Record<AgentName, string> = {
   sales_ai: "Sales AI",
 };
 
+/**
+ * How long a worker stays in the room it last worked in before heading home.
+ *
+ * An agent task is created and completed inside a single API request --
+ * often two or three seconds -- while this map polls every couple of
+ * seconds. Deriving the target room purely from "is something running at
+ * this exact instant" therefore nearly always observed `completed` and sent
+ * everyone straight back home, so no worker was ever seen going anywhere.
+ *
+ * Lingering is still driven entirely by real agent_tasks rows and their
+ * real finished_at timestamps -- it shows the recent past rather than only
+ * the present instant, which is what makes real work observable at human
+ * speed. Nothing here invents activity that didn't happen.
+ */
+const RECENT_WORK_WINDOW_MS = 90_000;
+
+function targetRoomFor(agent: AgentName, latest: AgentTask | undefined): Room {
+  if (!latest) return AGENT_HOME_ROOM[agent];
+  const room = latest.room ?? AGENT_HOME_ROOM[agent];
+
+  if (latest.status === "running" || latest.status === "queued" || latest.status === "waiting") return room;
+
+  const finishedAt = latest.finished_at ?? latest.updated_at;
+  const finished = finishedAt ? new Date(finishedAt).getTime() : NaN;
+  if (Number.isFinite(finished) && Date.now() - finished < RECENT_WORK_WINDOW_MS) return room;
+
+  return AGENT_HOME_ROOM[agent];
+}
+
 interface WorkerState {
   position: { x: number; y: number };
   queue: { x: number; y: number }[];
@@ -64,17 +93,46 @@ export default function RoomMap() {
         if (cancelled) return;
         setWorkers((prev) => {
           const next = { ...prev };
+
+          // Work out where everyone is headed first, so each agent can be
+          // given a slot based on the room's real occupancy rather than its
+          // own home room -- otherwise visitors land on top of residents.
+          const destinations = new Map<AgentName, Room>();
+          for (const agent of ALL_AGENTS) {
+            destinations.set(agent, targetRoomFor(agent, tasks.find((t) => t.agent === agent)));
+          }
+          const occupancy = new Map<Room, AgentName[]>();
+          for (const agent of ALL_AGENTS) {
+            const room = destinations.get(agent)!;
+            occupancy.set(room, [...(occupancy.get(room) ?? []), agent]);
+          }
+          const slotFor = (agent: AgentName, room: Room) => {
+            const here = occupancy.get(room) ?? [agent];
+            return { index: Math.max(0, here.indexOf(agent)), total: here.length };
+          };
+
           for (const agent of ALL_AGENTS) {
             const latest = tasks.find((t) => t.agent === agent);
-            const targetRoom: Room = latest?.status === "completed" || !latest ? AGENT_HOME_ROOM[agent] : latest.room ?? AGENT_HOME_ROOM[agent];
+            const targetRoom = destinations.get(agent)!;
             const current = next[agent];
             const status: AgentTask["status"] = latest ? latest.status : "idle";
             if (targetRoom !== current.lastRoom && current.queue.length === 0) {
               const path = getPath(current.lastRoom, targetRoom);
-              path[path.length - 1] = agentRoomPosition(agent, targetRoom);
+              path[path.length - 1] = agentRoomPosition(agent, targetRoom, slotFor(agent, targetRoom));
               next[agent] = { ...current, queue: path, lastRoom: targetRoom, status, message: latest?.message ?? null, taskType: latest?.task_type ?? null };
             } else {
-              next[agent] = { ...current, status, message: latest?.message ?? null, taskType: latest?.task_type ?? null };
+              // Already in the right room. Re-seat anyway if the room's
+              // occupancy changed -- a resident has to shuffle over when a
+              // visitor arrives, or the newcomer lands on top of it.
+              const seat =
+                current.queue.length === 0 ? agentRoomPosition(agent, targetRoom, slotFor(agent, targetRoom)) : current.position;
+              next[agent] = {
+                ...current,
+                position: seat,
+                status,
+                message: latest?.message ?? null,
+                taskType: latest?.task_type ?? null,
+              };
             }
           }
           return next;
@@ -84,7 +142,8 @@ export default function RoomMap() {
       }
     }
     poll();
-    const interval = setInterval(poll, 5000);
+    // Fast enough to catch a task that starts and finishes between polls.
+    const interval = setInterval(poll, 2000);
     return () => {
       cancelled = true;
       clearInterval(interval);
@@ -138,8 +197,8 @@ export default function RoomMap() {
         ))}
 
         {/* Workers */}
-        {ALL_AGENTS.map((agent) => (
-          <WorkerMarker key={agent} agent={agent} label={AGENT_LABEL[agent]} state={workers[agent]} />
+        {ALL_AGENTS.map((agent, i) => (
+          <WorkerMarker key={agent} agent={agent} label={AGENT_LABEL[agent]} state={workers[agent]} stagger={i % 2} />
         ))}
       </svg>
     </div>
@@ -167,13 +226,27 @@ function RoomShape({ room }: { room: (typeof ROOMS)[number] }) {
   );
 }
 
-function WorkerMarker({ agent, label, state }: { agent: AgentName; label: string; state: WorkerState }) {
+function WorkerMarker({
+  agent,
+  label,
+  state,
+  stagger,
+}: {
+  agent: AgentName;
+  label: string;
+  state: WorkerState;
+  stagger: number;
+}) {
   const colorClass = `rm-worker-${statusColor(state.status)}`;
+  // Names are wider than the gap between two workers standing side by side,
+  // so alternating agents sit their label on a second line. Without this,
+  // three agents in one room rendered as unreadable overlapping text.
+  const labelY = stagger === 0 ? -16 : -30;
   return (
     <g transform={`translate(${state.position.x}, ${state.position.y})`} className="rm-worker">
       <circle r={11} className={colorClass} />
       <circle r={11} className={`rm-worker-pulse ${colorClass}`} />
-      <text y={-16} textAnchor="middle" className="rm-worker-label">
+      <text y={labelY} textAnchor="middle" className="rm-worker-label">
         {label}
       </text>
       {state.status !== "idle" && (
