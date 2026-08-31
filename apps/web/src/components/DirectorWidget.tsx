@@ -18,6 +18,7 @@ export default function DirectorWidget() {
   const [unreadCount, setUnreadCount] = useState(0);
   const [answerDrafts, setAnswerDrafts] = useState<Record<string, string>>({});
   const [answering, setAnswering] = useState<string | null>(null);
+  const [dismissing, setDismissing] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // What's actually waiting on the owner: open questions, pending
@@ -192,6 +193,34 @@ export default function DirectorWidget() {
           {tab === "needs-you" && (
             <div className="director-list">
               {needsYouCount === 0 && <div className="director-empty">Nothing needs you right now.</div>}
+              {/* A backlog of unanswered questions stops the background
+                  review raising anything new, so it quietly halts itself.
+                  Clearing has to be one click, not 42 replies. */}
+              {questions.length > 3 && (
+                <div className="director-list-item" style={{ justifyContent: "space-between" }}>
+                  <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
+                    {questions.length} open questions are blocking the Director from reviewing new jobs.
+                  </div>
+                  <button
+                    className="btn btn-secondary"
+                    disabled={dismissing}
+                    onClick={async () => {
+                      if (!confirm(`Dismiss all ${questions.length} open questions? This can't be undone.`)) return;
+                      setDismissing(true);
+                      try {
+                        await api.post("/director/questions/dismiss-all");
+                        await refreshBadges();
+                      } catch (err: any) {
+                        alert(`Couldn't dismiss: ${err.message}`);
+                      } finally {
+                        setDismissing(false);
+                      }
+                    }}
+                  >
+                    {dismissing ? "…" : "Dismiss all"}
+                  </button>
+                </div>
+              )}
               {questions.map((q) => (
                 <div key={q.id} className="director-list-item director-question">
                   <span className="pill pill-warn">Question</span>

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getDb } from "../db/connection.js";
 import { runDirectorTurn } from "../agents/director.js";
 import { newId, nowIso } from "../lib/ids.js";
+import { recordAudit } from "../lib/audit.js";
 
 const router = Router();
 
@@ -76,6 +77,25 @@ router.post("/questions/:id/answer", (req, res) => {
  * background review cycle re-reviews them under the new, consolidated
  * behavior rather than leaving them permanently unreviewed.
  */
+/**
+ * Dismisses every open question in one go.
+ *
+ * The background review stops raising anything once MAX_OPEN_JOB_QUESTIONS
+ * is reached, so a backlog the owner never worked through ("Holding off --
+ * 42 job question(s) already waiting on you") silently halts the Director's
+ * own reviewing. Clearing is a legitimate answer to a pile of questions
+ * that were never worth asking, and without it the only route out was
+ * answering 42 of them by hand.
+ */
+router.post("/questions/dismiss-all", (_req, res) => {
+  const db = getDb();
+  const result = db
+    .prepare("UPDATE ai_questions SET status = 'dismissed', updated_at = ? WHERE status = 'open'")
+    .run(nowIso());
+  recordAudit({ actor: "owner", action: "questions_dismissed_all", details: { dismissed: result.changes } });
+  res.json({ ok: true, dismissed: result.changes });
+});
+
 router.post("/reset-job-reviews", (_req, res) => {
   const db = getDb();
   const now = nowIso();

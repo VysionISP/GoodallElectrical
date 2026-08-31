@@ -88,10 +88,24 @@ function ActivityBanner({ tasks }: { tasks: AgentTask[] | null }) {
   const lastAt = newest.finished_at ?? newest.updated_at;
   const minutesAgo = lastAt ? Math.round((Date.now() - new Date(lastAt).getTime()) / 60000) : null;
 
-  // Recent failures, with the reason. A red "FAILED" dot on the map with
-  // the cause buried in the database is not a diagnosis -- the error text
-  // is already recorded, it just had nowhere to appear.
-  const failed = tasks.filter((t) => t.status === "failed").slice(0, 3);
+  // Only an agent's MOST RECENT attempt counts as a current failure.
+  // Listing every failed row meant an error from hours ago -- already
+  // fixed, already superseded by a successful run -- stayed on screen
+  // forever, which reads as "still broken" long after it isn't. Tasks
+  // arrive newest-first, so the first row per agent is its latest.
+  const latestPerAgent = new Map<string, AgentTask>();
+  for (const t of tasks) if (!latestPerAgent.has(t.agent)) latestPerAgent.set(t.agent, t);
+  const failed = [...latestPerAgent.values()].filter((t) => t.status === "failed").slice(0, 4);
+
+  const ageOf = (t: AgentTask) => {
+    const at = t.finished_at ?? t.updated_at;
+    if (!at) return "";
+    const mins = Math.round((Date.now() - new Date(at).getTime()) / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins} min ago`;
+    const hrs = Math.round(mins / 60);
+    return hrs < 24 ? `${hrs} hr ago` : `${Math.round(hrs / 24)} d ago`;
+  };
 
   return (
     <div className="card" style={{ marginBottom: 16 }}>
@@ -108,8 +122,22 @@ function ActivityBanner({ tasks }: { tasks: AgentTask[] | null }) {
 
       {failed.map((t) => (
         <div key={t.id} style={{ marginTop: 10 }}>
-          <span className="pill pill-danger">{t.agent} failed</span>
-          <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4, wordBreak: "break-word" }}>
+          <span className="pill pill-danger">{t.agent} failed</span>{" "}
+          <span style={{ fontSize: 12, color: "var(--text-dim)" }}>
+            {t.task_type} · {ageOf(t)}
+          </span>
+          <div
+            style={{
+              fontSize: 12,
+              color: "var(--text-dim)",
+              marginTop: 4,
+              wordBreak: "break-word",
+              // A provider can return a huge payload; keep it scannable
+              // rather than letting one error swallow the page.
+              maxHeight: 88,
+              overflowY: "auto",
+            }}
+          >
             {t.error ?? t.message ?? "No reason was recorded."}
           </div>
         </div>
