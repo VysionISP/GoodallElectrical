@@ -186,3 +186,24 @@
   font-size: 11px;
   margin-top: 2px;
 }
+
+.director-question {
+  align-items: flex-start;
+}
+
+.director-answer-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.director-answer-row input {
+  flex: 1;
+  font-size: 12px;
+  padding: 6px 8px;
+}
+
+.director-answer-row .btn {
+  padding: 6px 10px;
+  font-size: 12px;
+}

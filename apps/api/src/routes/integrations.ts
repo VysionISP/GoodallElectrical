@@ -13,6 +13,8 @@ import { recordAudit } from "../lib/audit.js";
 import { testFergusConnection } from "../integrations/fergus.js";
 import { testXeroConnection, buildAuthorizeUrl, exchangeCodeForTokens, fetchTenantId } from "../integrations/xero.js";
 import { testOpenAiConnection } from "../integrations/openai.js";
+import { testGooglePlacesConnection } from "../integrations/googlePlaces.js";
+import { testSmtpConnection } from "../integrations/smtp.js";
 import { runFergusSync } from "../integrations/fergusSync.js";
 import { runXeroSync } from "../integrations/xeroSync.js";
 import { randomUUID } from "node:crypto";
@@ -85,6 +87,8 @@ router.post("/:provider/test", async (req, res) => {
     if (provider === "fergus") result = await testFergusConnection(credentials as any);
     else if (provider === "xero") result = await testXeroConnection(credentials as any);
     else if (provider === "openai") result = await testOpenAiConnection(credentials as any);
+    else if (provider === "google_places") result = await testGooglePlacesConnection(credentials as any);
+    else if (provider === "smtp") result = await testSmtpConnection(credentials as any);
     else result = { ok: true, detail: "No live test available for this provider yet." };
     recordIntegrationSuccess(provider);
     res.json(result);

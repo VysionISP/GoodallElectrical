@@ -94,10 +94,43 @@ integrations, integration_syncs, director_messages, audit_log.
   published spec, but `mapXeroInvoice`'s field names haven't been checked against
   a real Accounting API response (no Xero docs or credentials were available when
   this was written — same rule as above applies before trusting it).
-- Google Places / lead generation, sales outreach drafting, and the deeper
-  financial scenario-modelling / labour-forecast confidence engine from the brief
-  are not built yet — the schema has room for them (`leads`, `lead_research`,
-  `sales_outreach`, `job_context.confidence`) but the agent logic doesn't exist.
+- `apps/api/src/integrations/googlePlaces.ts` — written against well-established
+  knowledge of the Places API (New) Text Search endpoint (this environment's
+  network policy also blocked fetching Google's live docs), not a freshly
+  inspected payload. Unlike Fergus, Places is metered/billed per request — the
+  first real search is also the first real test of `mapPlace`, and it costs
+  money. Also worth knowing: the API only returns phone/website/address, never
+  an email address, so outreach can't be sent until an owner adds a contact
+  email manually (`PATCH /api/leads/:id`) or Research AI finds one on the site.
+
+## Lead generation pipeline
+
+Lead Hunter → Research AI → Sales AI, matching section 18-19 of the brief, with
+the same approval firewall as quotes/invoices:
+
+1. **Lead Hunter** (`POST /api/leads/search`, `apps/api/src/agents/leadHunter.ts`)
+   runs a Google Places text search and upserts results into `leads`, deduped by
+   `(source, source_ref)` so re-running a search doesn't create duplicates.
+2. **Research AI** (`POST /api/leads/:id/research`,
+   `apps/api/src/agents/researchAI.ts`) uses OpenAI, grounded only in the lead's
+   name/address/Google category types and (best-effort) the business's own
+   website text, to score fit and explain why — never inventing facts it wasn't
+   given. Writes to `lead_research` and updates the lead's `status`/`lead_score`.
+3. **Sales AI** (`POST /api/leads/:id/draft-outreach`,
+   `apps/api/src/agents/salesAI.ts`) drafts a personalized email into
+   `sales_outreach` with `status = 'drafted'`. It is never sent automatically.
+4. Sending requires `POST /api/leads/outreach/:id/submit-for-approval` (opens an
+   `approvals` row) and then an owner decision via `POST /api/approvals/:id/decide`
+   — exactly the quote/invoice pattern. `POST /api/leads/outreach/:id/send` is
+   wrapped in the same `requireApproval` middleware and returns
+   `403 OUTREACH_NOT_APPROVED` before that, `400 NO_CONTACT_EMAIL` if the lead has
+   no email on file, and `400 SMTP_NOT_CONFIGURED` if Email (SMTP) isn't set up —
+   it never fabricates a "sent" status when nothing was actually delivered.
+
+Frontend: **Lead Radar** page (search + list), lead detail page (research,
+contact-email editing, draft/submit/send). Lead Hunter, Research AI and Sales AI
+already had HQ nav-graph positions (Lead Radar room) from the original build, so
+their agent_tasks now animate there for real.
 
 ## Non-negotiables this build respects
 

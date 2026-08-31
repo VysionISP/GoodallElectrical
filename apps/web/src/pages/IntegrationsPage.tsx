@@ -14,8 +14,12 @@ const FIELD_MAP: Record<string, { key: string; label: string; secret?: boolean }
   openai: [{ key: "apiKey", label: "API key", secret: true }],
   smtp: [
     { key: "host", label: "SMTP host" },
+    { key: "port", label: "Port (e.g. 587)" },
+    { key: "secure", label: "Secure -- type true or false" },
     { key: "user", label: "Username" },
     { key: "pass", label: "Password", secret: true },
+    { key: "fromEmail", label: "From email address" },
+    { key: "fromName", label: "From name (optional)" },
   ],
   google_places: [{ key: "apiKey", label: "API key", secret: true }],
 };

@@ -16,9 +16,43 @@ export default function DirectorWidget() {
   const [tasks, setTasks] = useState<AgentTask[]>([]);
   const [activityNotifs, setActivityNotifs] = useState<Notification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [answerDrafts, setAnswerDrafts] = useState<Record<string, string>>({});
+  const [answering, setAnswering] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const needsYouCount = questions.length + approvals.length;
+
+  async function answerQuestion(q: AiQuestion) {
+    const answer = answerDrafts[q.id]?.trim();
+    if (!answer) return;
+    setAnswering(q.id);
+    try {
+      // Route the answer through the Director's chat pipeline so it gets
+      // extracted into structured job_context, not just recorded as raw
+      // text -- an answer to "is this night work?" should actually update
+      // what the Director knows about the job, not just close the question.
+      const context = q.job_number ? `Re: ${q.job_number} -- ${q.question}` : `Re: ${q.question}`;
+      await api.post("/director/chat", { message: `${context}\nAnswer: ${answer}` });
+      // Belt-and-suspenders: the chat extraction only auto-resolves a
+      // question if its wording happens to match the extracted fact's key,
+      // which isn't guaranteed. Explicitly mark this specific question
+      // answered too, so it reliably clears from Needs You either way.
+      await api.post(`/director/questions/${q.id}/answer`, { answer, answeredBy: "owner" });
+      setAnswerDrafts((prev) => {
+        const next = { ...prev };
+        delete next[q.id];
+        return next;
+      });
+      await refreshBadges();
+      setTab("chat");
+      const fresh = await api.get<{ messages: DirectorMessage[] }>("/director/messages");
+      setMessages(fresh.messages);
+    } catch (err: any) {
+      alert(`Couldn't send that answer: ${err.message}`);
+    } finally {
+      setAnswering(null);
+    }
+  }
 
   async function refreshBadges() {
     try {
@@ -154,11 +188,27 @@ export default function DirectorWidget() {
             <div className="director-list">
               {needsYouCount === 0 && <div className="director-empty">Nothing needs you right now.</div>}
               {questions.map((q) => (
-                <div key={q.id} className="director-list-item">
+                <div key={q.id} className="director-list-item director-question">
                   <span className="pill pill-warn">Question</span>
-                  <div>
+                  <div style={{ flex: 1 }}>
                     <div>{q.question}</div>
                     {q.job_number && <div className="director-list-meta">{q.job_number}</div>}
+                    <div className="director-answer-row">
+                      <input
+                        placeholder="Type your answer..."
+                        value={answerDrafts[q.id] ?? ""}
+                        onChange={(e) => setAnswerDrafts((prev) => ({ ...prev, [q.id]: e.target.value }))}
+                        onKeyDown={(e) => e.key === "Enter" && answerQuestion(q)}
+                        disabled={answering === q.id}
+                      />
+                      <button
+                        className="btn"
+                        disabled={answering === q.id || !answerDrafts[q.id]?.trim()}
+                        onClick={() => answerQuestion(q)}
+                      >
+                        {answering === q.id ? "…" : "Reply"}
+                      </button>
+                    </div>
                   </div>
                 </div>
               ))}

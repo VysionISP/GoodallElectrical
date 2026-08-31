@@ -6,6 +6,8 @@ import JobDetailPage from "./pages/JobDetailPage.js";
 import ApprovalsPage from "./pages/ApprovalsPage.js";
 import IntegrationsPage from "./pages/IntegrationsPage.js";
 import QuotesPage from "./pages/QuotesPage.js";
+import LeadsPage from "./pages/LeadsPage.js";
+import LeadDetailPage from "./pages/LeadDetailPage.js";
 import DirectorWidget from "./components/DirectorWidget.js";
 
 export default function App() {
@@ -25,6 +27,7 @@ export default function App() {
           </NavLink>
           <NavLink to="/jobs">Jobs Floor</NavLink>
           <NavLink to="/quotes">Quotes</NavLink>
+          <NavLink to="/leads">Lead Radar</NavLink>
           <NavLink to="/approvals">Approvals</NavLink>
           <NavLink to="/integrations">Integrations</NavLink>
         </nav>
@@ -35,6 +38,8 @@ export default function App() {
           <Route path="/jobs" element={<JobsFloorPage />} />
           <Route path="/jobs/:id" element={<JobDetailPage />} />
           <Route path="/quotes" element={<QuotesPage />} />
+          <Route path="/leads" element={<LeadsPage />} />
+          <Route path="/leads/:id" element={<LeadDetailPage />} />
           <Route path="/approvals" element={<ApprovalsPage />} />
           <Route path="/integrations" element={<IntegrationsPage />} />
         </Routes>

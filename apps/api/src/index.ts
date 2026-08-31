@@ -13,6 +13,7 @@ import agentTasksRouter from "./routes/agentTasks.js";
 import notificationsRouter from "./routes/notifications.js";
 import auditLogRouter from "./routes/auditLog.js";
 import directorRouter from "./routes/director.js";
+import leadsRouter from "./routes/leads.js";
 
 // Idempotent -- safe on an empty DB, a partially migrated DB, or an
 // up-to-date DB. This is the fix for the historical
@@ -74,6 +75,7 @@ app.use("/api/agent-tasks", agentTasksRouter);
 app.use("/api/notifications", notificationsRouter);
 app.use("/api/audit-log", auditLogRouter);
 app.use("/api/director", directorRouter);
+app.use("/api/leads", leadsRouter);
 
 app.use((req, res) => {
   res.status(404).json({ error: "NOT_FOUND", path: req.path });
